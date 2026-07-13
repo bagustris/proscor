@@ -1,0 +1,24 @@
+# proscor-en default prompts. One word/sentence per line. '#' starts a comment.
+# category: minimal-pairs
+ship
+sheep
+think
+thing
+bit
+beat
+thought
+though
+through
+true
+cat
+cut
+live
+leave
+full
+fool
+# category: sentences
+She sells sea shells.
+The quick brown fox jumps over the lazy dog.
+Peter Piper picked a peck of pickled peppers.
+I would like a cup of coffee, please.
+Can you tell me how to get to the station?
