@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>proscor-en</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  #prompt { font-size: 1.8rem; margin: 1rem 0; }
+  button { font-size: 1rem; padding: 0.5rem 1rem; margin-right: 0.5rem; cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: 0.5; }
+  #score { font-size: 1.5rem; margin-top: 1rem; }
+  table { border-collapse: collapse; margin-top: 1rem; width: 100%; }
+  td, th { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; }
+  .ok { color: #1a7f37; }
+  .miss { color: #cf222e; }
+  #notes { color: #666; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+<h1>proscor-en &mdash; pronunciation practice</h1>
+<div id="prompt">Loading prompt&hellip;</div>
+<button id="playBtn">Play reference</button>
+<button id="recordBtn">Record</button>
+<button id="nextBtn">Next prompt</button>
+<div id="score"></div>
+<div id="notes"></div>
+<table id="wordsTable" style="display:none">
+  <thead><tr><th>Target</th><th>Heard</th><th>Score</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<script>
+let currentPrompt = null;
+let audioCtx = null;
+let mediaStream = null;
+let sourceNode = null;
+let processorNode = null;
+let recordedChunks = [];
+let recording = false;
+
+const promptEl = document.getElementById("prompt");
+const playBtn = document.getElementById("playBtn");
+const recordBtn = document.getElementById("recordBtn");
+const nextBtn = document.getElementById("nextBtn");
+const scoreEl = document.getElementById("score");
+const notesEl = document.getElementById("notes");
+const wordsTable = document.getElementById("wordsTable");
+const wordsBody = wordsTable.querySelector("tbody");
+
+async function loadPrompt() {
+  const res = await fetch("/api/prompt");
+  currentPrompt = await res.json();
+  promptEl.textContent = currentPrompt.text;
+  scoreEl.textContent = "";
+  notesEl.textContent = "";
+  wordsTable.style.display = "none";
+}
+
+async function playReference() {
+  if (!currentPrompt) return;
+  const res = await fetch("/api/reference?text=" + encodeURIComponent(currentPrompt.text));
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const audioEl = new Audio(url);
+  audioEl.play();
+}
+
+function floatTo16BitPCM(view, offset, input) {
+  for (let i = 0; i < input.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+}
+
+function writeString(view, offset, str) {
+  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+
+function encodeWav(samples, sampleRate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  writeString(view, 0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeString(view, 8, "WAVE");
+  writeString(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);   // PCM
+  view.setUint16(22, 1, true);   // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(view, 36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  floatTo16BitPCM(view, 44, samples);
+  return new Blob([view], { type: "audio/wav" });
+}
+
+function downsampleTo16k(buffer, inputSampleRate) {
+  const targetRate = 16000;
+  if (inputSampleRate === targetRate) return buffer;
+  const ratio = inputSampleRate / targetRate;
+  const outLength = Math.round(buffer.length / ratio);
+  const result = new Float32Array(outLength);
+  for (let i = 0; i < outLength; i++) {
+    result[i] = buffer[Math.round(i * ratio)];
+  }
+  return result;
+}
+
+async function startRecording() {
+  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+  processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+  recordedChunks = [];
+
+  processorNode.onaudioprocess = (e) => {
+    if (!recording) return;
+    recordedChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  };
+  sourceNode.connect(processorNode);
+  processorNode.connect(audioCtx.destination);
+  recording = true;
+}
+
+function stopRecording() {
+  recording = false;
+  processorNode.disconnect();
+  sourceNode.disconnect();
+  mediaStream.getTracks().forEach((t) => t.stop());
+
+  const totalLength = recordedChunks.reduce((sum, c) => sum + c.length, 0);
+  const merged = new Float32Array(totalLength);
+  let offset = 0;
+  for (const chunk of recordedChunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  const downsampled = downsampleTo16k(merged, audioCtx.sampleRate);
+  return encodeWav(downsampled, 16000);
+}
+
+async function submitRecording(wavBlob) {
+  const formData = new FormData();
+  formData.append("audio", wavBlob, "recording.wav");
+  formData.append("target_text", currentPrompt.text);
+
+  recordBtn.textContent = "Scoring...";
+  const res = await fetch("/api/score", { method: "POST", body: formData });
+  const report = await res.json();
+  renderReport(report);
+  recordBtn.textContent = "Record";
+}
+
+function renderReport(report) {
+  scoreEl.textContent = `Score: ${Math.round(report.score)}/100`;
+  notesEl.textContent = report.notes || "";
+  wordsBody.innerHTML = "";
+  for (const w of report.words) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="${w.correct ? "ok" : "miss"}">${w.target}</td>
+      <td>${w.recognized || "(nothing)"}</td>
+      <td>${Math.round(w.word_score)}</td>
+    `;
+    wordsBody.appendChild(tr);
+  }
+  wordsTable.style.display = "table";
+}
+
+playBtn.addEventListener("click", playReference);
+nextBtn.addEventListener("click", loadPrompt);
+
+recordBtn.addEventListener("click", async () => {
+  if (!recording) {
+    recordBtn.textContent = "Stop";
+    recordBtn.disabled = false;
+    await startRecording();
+  } else {
+    const wavBlob = stopRecording();
+    recordBtn.textContent = "Record";
+    await submitRecording(wavBlob);
+  }
+});
+
+loadPrompt();
+</script>
+</body>
+</html>

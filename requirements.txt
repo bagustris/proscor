@@ -3,5 +3,6 @@ g2p_en>=2.1.0
 soundfile>=0.12.1
 fastapi>=0.110
 uvicorn[standard]>=0.27
+python-multipart>=0.0.9  # required by FastAPI for the /api/score file+form upload
 rapidfuzz>=3.6
 pydantic>=2.5
