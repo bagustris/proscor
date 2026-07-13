@@ -515,7 +515,8 @@ or a separate release cadence - none of id/ja/ar do.
   language lands.
 
 ### TODO list (when we get there)
-- [ ] Rename `proscor-en` -> `proscor`; add `LANG` config + `--lang` CLI flag.
+- [x] Rename `proscor-en` -> `proscor`
+- [ ] Add `LANG` config + `--lang` CLI flag. Make default to English
 - [ ] `proscor/g2p.py`: pluggable backends per lang (id: rules, ja: `fugashi`+`unidic`,
       ar: rules); common phone inventory (IPA or a shared set).
 - [ ] `data/prompts.<lang>.txt` + `data/lexicon.<lang>.txt` per language.
