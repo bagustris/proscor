@@ -1,0 +1,7 @@
+g2p_en>=2.1.0
+-e ../sherox            # ASR + TTS, sibling repo (pulls sherpa-onnx, audiokit@../audiokit, numpy>=2.2)
+soundfile>=0.12.1
+fastapi>=0.110
+uvicorn[standard]>=0.27
+rapidfuzz>=3.6
+pydantic>=2.5
