@@ -22,6 +22,7 @@
 <div id="prompt">Loading prompt&hellip;</div>
 <button id="playBtn">Play reference</button>
 <button id="recordBtn">Record</button>
+<button id="playRecordingBtn" disabled>Play my recording</button>
 <button id="nextBtn">Next prompt</button>
 <div id="score"></div>
 <div id="notes"></div>
@@ -38,10 +39,12 @@ let sourceNode = null;
 let processorNode = null;
 let recordedChunks = [];
 let recording = false;
+let lastRecordingBlob = null;
 
 const promptEl = document.getElementById("prompt");
 const playBtn = document.getElementById("playBtn");
 const recordBtn = document.getElementById("recordBtn");
+const playRecordingBtn = document.getElementById("playRecordingBtn");
 const nextBtn = document.getElementById("nextBtn");
 const scoreEl = document.getElementById("score");
 const notesEl = document.getElementById("notes");
@@ -55,6 +58,8 @@ async function loadPrompt() {
   scoreEl.textContent = "";
   notesEl.textContent = "";
   wordsTable.style.display = "none";
+  lastRecordingBlob = null;
+  playRecordingBtn.disabled = true;
 }
 
 async function playReference() {
@@ -62,6 +67,13 @@ async function playReference() {
   const res = await fetch("/api/reference?text=" + encodeURIComponent(currentPrompt.text));
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
+  const audioEl = new Audio(url);
+  audioEl.play();
+}
+
+function playMyRecording() {
+  if (!lastRecordingBlob) return;
+  const url = URL.createObjectURL(lastRecordingBlob);
   const audioEl = new Audio(url);
   audioEl.play();
 }
@@ -143,6 +155,9 @@ function stopRecording() {
 }
 
 async function submitRecording(wavBlob) {
+  lastRecordingBlob = wavBlob;
+  playRecordingBtn.disabled = false;
+
   const formData = new FormData();
   formData.append("audio", wavBlob, "recording.wav");
   formData.append("target_text", currentPrompt.text);
@@ -171,6 +186,7 @@ function renderReport(report) {
 }
 
 playBtn.addEventListener("click", playReference);
+playRecordingBtn.addEventListener("click", playMyRecording);
 nextBtn.addEventListener("click", loadPrompt);
 
 recordBtn.addEventListener("click", async () => {

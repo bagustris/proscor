@@ -26,6 +26,7 @@ def _score_and_report(target_text: str, seconds: float, include_stress: bool, mo
     result = transcribe(samples, model_dir=model_dir)
     report = scorer.score(target_text, result, include_stress=include_stress)
     print(fb.format_report(report))
+    return samples
 
 
 def main():
@@ -54,9 +55,15 @@ def main():
                 continue
             break
 
-        _score_and_report(prompt["text"], args.seconds, args.include_stress, args.model_dir)
+        last_recording = _score_and_report(prompt["text"], args.seconds, args.include_stress, args.model_dir)
 
-        action = input("proscor> (n)ext  (r)etry  (q)uit  ").strip().lower()
+        while True:
+            action = input("proscor> (l)isten to your recording  (n)ext  (r)etry  (q)uit  ").strip().lower()
+            if action == "l":
+                audio.play(last_recording)
+                continue
+            break
+
         if action == "q":
             break
         elif action == "r":

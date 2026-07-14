@@ -14,6 +14,14 @@ def record(seconds: float, sr: int = SAMPLE_RATE) -> np.ndarray:
     return samples.reshape(-1)
 
 
+def play(samples: np.ndarray, sr: int = SAMPLE_RATE) -> None:
+    """Play back mono audio (e.g. the learner's own recording) through the default output device."""
+    import sounddevice as sd
+
+    sd.play(samples, samplerate=sr)
+    sd.wait()
+
+
 def save_wav(path: str, samples: np.ndarray, sr: int = SAMPLE_RATE) -> None:
     sf.write(path, samples, sr, subtype="PCM_16")
 
