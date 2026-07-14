@@ -163,4 +163,5 @@ without a rewrite — see [section 9](PLAN.md#9-future-todo-multi-language-indon
 - Recording in the CLI requires PortAudio (`apt install portaudio19-dev` on Linux,
   `brew install portaudio` on macOS).
 
-See [`PLAN.md`](PLAN.md) for the full design rationale and build history.
+See [`PLAN.md`](PLAN.md) for the full design rationale and build history, and
+[`CHANGELOG.md`](CHANGELOG.md) for release notes.
