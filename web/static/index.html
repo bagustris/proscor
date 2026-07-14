@@ -160,11 +160,18 @@ function renderReport(report) {
   wordsBody.innerHTML = "";
   for (const w of report.words) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td class="${w.correct ? "ok" : "miss"}">${w.target}</td>
-      <td>${w.recognized || "(nothing)"}</td>
-      <td>${Math.round(w.word_score)}</td>
-    `;
+
+    const targetTd = document.createElement("td");
+    targetTd.className = w.correct ? "ok" : "miss";
+    targetTd.textContent = w.target;
+
+    const recognizedTd = document.createElement("td");
+    recognizedTd.textContent = w.recognized || "(nothing)";
+
+    const scoreTd = document.createElement("td");
+    scoreTd.textContent = Math.round(w.word_score);
+
+    tr.append(targetTd, recognizedTd, scoreTd);
     wordsBody.appendChild(tr);
   }
   wordsTable.style.display = "table";

@@ -2,7 +2,7 @@
 
 > Show words -> the user reads them aloud -> the system returns a 0-100 score and feedback.
 > Target: **simple**, runs on **any PC** (CPU only, no GPU), usable as a **CLI** and a **web app**.
-> Scope: **English only in v1.** Indonesian / Japanese / Arabic are a future TODO (see section 9).
+> Scope: **English only in v1.** Indonesian / Arabic are a future TODO (see section 9).
 
 This is a build spec for an autonomous coding agent (e.g., Claude Code / Sonnet).
 Implement it step by step, commit after each step, and keep the code working at every step.
@@ -37,7 +37,7 @@ The earlier version of this file described **building a custom Grapheme-to-Phone
 feedback pipeline with the author's `sherox` toolkit (sherpa-onnx) for **both ASR
 and TTS** on CPU, and add **reference pronunciation audio** (let the learner hear
 the target) via `sherox.tts`. Everything runs on CPU. **English only for v1**;
-Indonesian/Japanese/Arabic are a future TODO (see section 9).
+Indonesian/Arabic are a future TODO (see section 9).
 
 ---
 
@@ -97,7 +97,8 @@ Pipeline (all CPU, all offline after a one-time model download):
     `pyproject.toml` already declares `audiokit = { path = "../audiokit", editable = true }`,
     so installing sherox editable resolves audiokit locally. If a sherox-side change is
     ever needed, edit `../sherox` directly or open an issue: `gh issue create -R bagustris/sherox`.
-  - Fallback if the sibling repos are absent: `pip install sherox` (PyPI) and
+  - Fallback if the sibling repos are absent: install both from git:
+    `pip install git+https://github.com/bagustris/sherox` and
     `pip install git+https://github.com/bagustris/audiokit`.
 - **Audio (CLI):** `sounddevice` + `soundfile` (record N seconds to WAV).
 - **Audio (web):** browser `MediaRecorder` -> upload WAV to backend.
@@ -166,8 +167,10 @@ proscor-en/
 - Install (editable, local): `pip install -e ../audiokit && pip install -e ../sherox`
   (install audiokit first to avoid any resolution hiccup; sherox's pyproject also
   resolves audiokit from `../audiokit`), then `pip install -r requirements.txt`.
-  If the siblings are absent, fall back to `pip install sherox` + audiokit from git.
-- `python -c "import nltk; nltk.download('cmudict'); nltk.download('averaged_perceptron_tagger')"`.
+  If the siblings are absent, fall back to installing both from git:
+  `pip install git+https://github.com/bagustris/sherox` and
+  `pip install git+https://github.com/bagustris/audiokit`.
+- `python -c "import nltk; nltk.download('cmudict'); nltk.download('averaged_perceptron_tagger_eng')"`.
 - **No manual model download.** sherox auto-downloads the ASR model (NeMo CTC
   English medium), Silero VAD (for offline ASR), and the TTS model (Piper
   `en_US-amy-medium`) into `models/` on first use. The first run is slower because
@@ -414,7 +417,7 @@ Wire both behind `--engine gop` (or `--engine gop-lite`) and keep
 python -m venv .venv && source .venv/bin/activate
 pip install -e ../audiokit && pip install -e ../sherox
 pip install -r requirements.txt
-python -c "import nltk; nltk.download('cmudict'); nltk.download('averaged_perceptron_tagger')"
+python -c "import nltk; nltk.download('cmudict'); nltk.download('averaged_perceptron_tagger_eng')"
 # NeMo CTC English ASR + Silero VAD + Piper TTS all auto-download into models/ on
 # first CLI/web run — no manual download step.
 
@@ -470,10 +473,10 @@ python scripts/selftest.py
 
 ---
 
-## 9. Future TODO: multi-language (Indonesian, Japanese, Arabic)
+## 9. Future TODO: multi-language (Indonesian, Arabic)
 
 **English is the only target for v1.** This section records the plan for adding
-Indonesian (id), Japanese (ja), and Arabic (ar) later, so today's design doesn't
+Indonesian (id) and Arabic (ar) later, so today's design doesn't
 accidentally block it.
 
 ### Single repo, not separate repos (recommendation)
@@ -486,8 +489,6 @@ is language-agnostic. Only three things vary per language:
    - English: `g2p_en` (CMUdict + neural OOV).
    - Indonesian: near one-to-one orthography -> a small rule table / `epitran`-style
      mapping suffices; or a lexicon.
-   - Japanese: kana/kanji -> phoneme needs a tokenizer (`fugashi` + `unidic`) + a
-     reading dictionary; furigana prompts help.
    - Arabic: mostly one-to-one but with diacritic/hamza/sun-letter rules; a rule
      table + lexicon.
    - A common `expected_phonemes(text, lang)` interface with per-lang backends keeps
@@ -495,21 +496,20 @@ is language-agnostic. Only three things vary per language:
      (e.g. IPA via NRC-ILT `g2p`, or map each language to a common phone set).
 2. **Prompt/lexicon data**: `data/prompts.<lang>.txt`, `data/lexicon.<lang>.txt`.
 3. **sherox ASR + TTS model selection** (already multilingual via `--lang`/model_dir):
-   - ASR: sherox has Japanese (ReazonSpeech, Parakeet CTC JA) and a multilingual
-     streaming zipformer (ar/en/id/ja/...). Indonesian/Arabic can use the multilingual
-     model or a per-language sherpa-onnx model.
-   - TTS: sherox has `ind` (Piper id_ID), `jpn` (Piper Plus/Sarashina), and Arabic
-     via Supertonic-3 (`ara`).
+   - ASR: sherox has a multilingual streaming zipformer (ar/en/id/...).
+     Indonesian/Arabic can use the multilingual model or a per-language sherpa-onnx
+     model.
+   - TTS: sherox has `ind` (Piper id_ID) and Arabic via Supertonic-3 (`ara`).
 
 So multi-language is a **registry/config addition**, not a new codebase. Split into
 separate repos only if a language needs a fundamentally different scoring algorithm
-or a separate release cadence - none of id/ja/ar do.
+or a separate release cadence - none of id/ar do.
 
 ### Why not now
 
-- **G2P quality is the long pole:** id/ar are easy, ja is non-trivial (tokenizer +
-  reading dictionary). Doing it well per language is real work; doing it badly hurts
-  scoring. Ship a solid English v1 first, then add one language at a time.
+- **G2P quality is the long pole:** id/ar are easy, but doing it well per language
+  is real work; doing it badly hurts scoring. Ship a solid English v1 first, then
+  add one language at a time.
 - **Cross-language phone-set alignment** (so the edit-distance score is comparable
   across languages) needs a deliberate inventory decision - defer until the 2nd
   language lands.
@@ -517,8 +517,8 @@ or a separate release cadence - none of id/ja/ar do.
 ### TODO list (when we get there)
 - [x] Rename `proscor-en` -> `proscor`
 - [ ] Add `LANG` config + `--lang` CLI flag. Make default to English
-- [ ] `proscor/g2p.py`: pluggable backends per lang (id: rules, ja: `fugashi`+`unidic`,
-      ar: rules); common phone inventory (IPA or a shared set).
+- [ ] `proscor/g2p.py`: pluggable backends per lang (id: rules, ar: rules);
+      common phone inventory (IPA or a shared set).
 - [ ] `data/prompts.<lang>.txt` + `data/lexicon.<lang>.txt` per language.
 - [ ] `config.py`: per-lang ASR model_dir/type + TTS lang (sherox already supports).
 - [ ] Per-language tests; per-language feedback phoneme-hint table.

@@ -7,9 +7,26 @@ from proscor.config import DEFAULT_LEXICON_PATH
 _G2P = None
 
 
+def _ensure_nltk_data() -> None:
+    """g2p_en needs these NLTK corpora; auto-fetch if missing rather than
+    crashing with an opaque LookupError (resource names vary across NLTK
+    versions, e.g. `averaged_perceptron_tagger` vs. `..._eng`)."""
+    import nltk
+
+    for find_path, download_name in (
+        ("corpora/cmudict", "cmudict"),
+        ("taggers/averaged_perceptron_tagger_eng", "averaged_perceptron_tagger_eng"),
+    ):
+        try:
+            nltk.data.find(find_path)
+        except LookupError:
+            nltk.download(download_name, quiet=True)
+
+
 def _get_g2p():
     global _G2P
     if _G2P is None:
+        _ensure_nltk_data()
         from g2p_en import G2p
         _G2P = G2p()
     return _G2P

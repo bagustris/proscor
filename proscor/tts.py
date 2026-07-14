@@ -15,7 +15,8 @@ def _build_tts(lang: str):
         raise ImportError(
             "sherox is required for TTS. Install the sibling repo: "
             "`pip install -e ../audiokit && pip install -e ../sherox` "
-            "(fallback: `pip install sherox`). See PLAN.md section 2."
+            "(fallback: `pip install git+https://github.com/bagustris/sherox`). "
+            "See PLAN.md section 2."
         ) from exc
     cfg = TtsConfig(model_dir="", language=lang, num_threads=1)
     return build_tts(cfg, ROOT)

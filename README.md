@@ -64,14 +64,15 @@ uv venv .venv && source .venv/bin/activate
 uv pip install -e ../audiokit -e ../sherox
 uv pip install -r requirements.txt
 
-python -c "import nltk; nltk.download('cmudict'); nltk.download('averaged_perceptron_tagger')"
+python -c "import nltk; nltk.download('cmudict'); nltk.download('averaged_perceptron_tagger_eng')"
 ```
 
 (Plain `python -m venv` + `pip install` works the same way if you'd rather not use uv.)
 
 > [!TIP]
-> Don't have the sibling repos? `pip install sherox` (PyPI) plus
-> `pip install git+https://github.com/bagustris/audiokit` works as a fallback.
+> Don't have the sibling repos? Install both from git as a fallback:
+> `pip install git+https://github.com/bagustris/sherox` plus
+> `pip install git+https://github.com/bagustris/audiokit`.
 
 > [!TIP]
 > On a machine without PyPI access, build the venv with
@@ -151,8 +152,8 @@ G2P model's output.
 
 ## Scope
 
-English only for now. `PLAN.md` outlines a path to add Indonesian, Japanese, and
-Arabic without a rewrite — see [section 9](PLAN.md#9-future-todo-multi-language-indonesian-japanese-arabic).
+English only for now. `PLAN.md` outlines a path to add Indonesian and Arabic
+without a rewrite — see [section 9](PLAN.md#9-future-todo-multi-language-indonesian-arabic).
 
 ## Limitations
 
