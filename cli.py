@@ -26,6 +26,34 @@ def _score_and_report(target_text: str, seconds: float, include_stress: bool, mo
     result = transcribe(samples, model_dir=model_dir)
     report = scorer.score(target_text, result, include_stress=include_stress)
     print(fb.format_report(report))
+    return samples
+
+
+def _play_reference_loop(prompt: dict, args) -> None:
+    """Let the learner replay the reference audio before recording."""
+    while True:
+        key = input("proscor> ").strip().lower()
+        if key == "p" and not args.no_tts:
+            from proscor.tts import play_reference
+
+            play_reference(prompt["text"], lang=args.tts_lang)
+            continue
+        break
+
+
+def _action_loop(last_recording) -> str:
+    """Prompt the learner for the next action after scoring.
+
+    Returns one of ``"n"`` (next), ``"r"`` (retry), or ``"q"`` (quit).
+    """
+    while True:
+        action = input("proscor> (l)isten to your recording  (n)ext  (r)etry  (q)uit  ").strip().lower()
+        if action == "l":
+            audio.play(last_recording)
+            continue
+        if action in ("n", "r", "q"):
+            return action
+        print("proscor> Unknown command. Please choose (l), (n), (r), or (q).")
 
 
 def main():
@@ -46,18 +74,12 @@ def main():
             else:
                 print("proscor> Press ENTER to record...")
 
-            while True:
-                key = input("proscor> ").strip().lower()
-                if key == "p" and not args.no_tts:
-                    from proscor.tts import play_reference
+            _play_reference_loop(prompt, args)
 
-                    play_reference(prompt["text"], lang=args.tts_lang)
-                    continue
-                break
+            last_recording = _score_and_report(prompt["text"], args.seconds, args.include_stress, args.model_dir)
 
-            _score_and_report(prompt["text"], args.seconds, args.include_stress, args.model_dir)
+            action = _action_loop(last_recording)
 
-            action = input("proscor> (n)ext  (r)etry  (q)uit  ").strip().lower()
             if action == "q":
                 break
             elif action == "r":

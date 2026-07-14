@@ -1,4 +1,5 @@
 """Transcribe recorded audio via sherox (sherpa-onnx) -> text + per-word timing."""
+import shutil
 import sys
 import tarfile
 from pathlib import Path
@@ -71,8 +72,14 @@ def _download_default_asr_model(target: Path) -> None:
                 tf.extractall(models_root, filter="data")
             else:  # pragma: no cover - depends on Python version
                 tf.extractall(models_root, members=safe_tar_members(tf, models_root))
+    except KeyboardInterrupt:
+        # Keep the downloaded archive (158 MB) so a retry doesn't re-fetch it;
+        # only the possibly-partial extraction needs to go.
+        shutil.rmtree(target, ignore_errors=True)
+        raise
     except Exception as exc:
         archive.unlink(missing_ok=True)
+        shutil.rmtree(target, ignore_errors=True)
         raise RuntimeError(f"ASR model extraction failed: {exc}") from exc
 
     archive.unlink(missing_ok=True)
@@ -95,7 +102,8 @@ def _ensure_asr_model(model_dir: str) -> str:
     regardless of the cwd the CLI is launched from."""
     if model_dir != config.ASR_MODEL_DIR:
         return model_dir
-    target = (ROOT / model_dir).resolve()
+    path = Path(model_dir)
+    target = path.resolve() if path.is_absolute() else (ROOT / path).resolve()
     if _model_ready(target):
         return str(target)
     _download_default_asr_model(target)
