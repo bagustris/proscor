@@ -75,6 +75,9 @@ function playMyRecording() {
   if (!lastRecordingBlob) return;
   const url = URL.createObjectURL(lastRecordingBlob);
   const audioEl = new Audio(url);
+  const cleanup = () => URL.revokeObjectURL(url);
+  audioEl.addEventListener("ended", cleanup);
+  audioEl.addEventListener("error", cleanup);
   audioEl.play();
 }
 
