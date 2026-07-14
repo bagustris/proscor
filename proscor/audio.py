@@ -14,6 +14,19 @@ def record(seconds: float, sr: int = SAMPLE_RATE) -> np.ndarray:
     return samples.reshape(-1)
 
 
+def play(samples: np.ndarray, sr: int = SAMPLE_RATE) -> None:
+    """Play back mono audio (e.g. the learner's own recording) through the default output device.
+
+    Accepts a 1-D mono NumPy array (int16 or float); multi-channel arrays are
+    flattened to mono, matching the output of :func:`record`.
+    """
+    import sounddevice as sd
+
+    samples = np.asarray(samples).reshape(-1)
+    sd.play(samples, samplerate=sr)
+    sd.wait()
+
+
 def save_wav(path: str, samples: np.ndarray, sr: int = SAMPLE_RATE) -> None:
     sf.write(path, samples, sr, subtype="PCM_16")
 
