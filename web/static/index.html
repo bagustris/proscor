@@ -75,9 +75,13 @@ function playMyRecording() {
   if (!lastRecordingBlob) return;
   const url = URL.createObjectURL(lastRecordingBlob);
   const audioEl = new Audio(url);
-  const cleanup = () => URL.revokeObjectURL(url);
+  const cleanup = () => {
+    URL.revokeObjectURL(url);
+    playRecordingBtn.disabled = false;
+  };
   audioEl.addEventListener("ended", cleanup);
   audioEl.addEventListener("error", cleanup);
+  playRecordingBtn.disabled = true;
   audioEl.play();
 }
 
@@ -194,6 +198,8 @@ nextBtn.addEventListener("click", loadPrompt);
 
 recordBtn.addEventListener("click", async () => {
   if (!recording) {
+    lastRecordingBlob = null;
+    playRecordingBtn.disabled = true;
     recordBtn.textContent = "Stop";
     recordBtn.disabled = false;
     await startRecording();

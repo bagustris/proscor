@@ -62,7 +62,9 @@ def main():
             if action == "l":
                 audio.play(last_recording)
                 continue
-            break
+            if action in ("n", "r", "q"):
+                break
+            print("proscor> Unknown command. Please choose (l), (n), (r), or (q).")
 
         if action == "q":
             break
