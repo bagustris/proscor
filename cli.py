@@ -66,25 +66,32 @@ def main():
 
     index = 0
     while True:
-        prompt = prompt_list[index % len(prompt_list)]
-        print(f'\nproscor> Prompt #{prompt["id"]}: "{prompt["text"]}"')
-        if not args.no_tts:
-            print("proscor> (p)lay reference, then press ENTER to record...")
-        else:
-            print("proscor> Press ENTER to record...")
+        try:
+            prompt = prompt_list[index % len(prompt_list)]
+            print(f'\nproscor> Prompt #{prompt["id"]}: "{prompt["text"]}"')
+            if not args.no_tts:
+                print("proscor> (p)lay reference, then press ENTER to record...")
+            else:
+                print("proscor> Press ENTER to record...")
 
-        _play_reference_loop(prompt, args)
+            _play_reference_loop(prompt, args)
 
-        last_recording = _score_and_report(prompt["text"], args.seconds, args.include_stress, args.model_dir)
+            last_recording = _score_and_report(prompt["text"], args.seconds, args.include_stress, args.model_dir)
 
-        action = _action_loop(last_recording)
+            action = _action_loop(last_recording)
 
-        if action == "q":
+            if action == "q":
+                break
+            elif action == "r":
+                continue
+            else:
+                index += 1
+        except (KeyboardInterrupt, EOFError):
+            # Ctrl-C (KeyboardInterrupt) and Ctrl-D (EOFError) exit the loop
+            # cleanly, just like pressing (q)uit — no traceback, exit code 0.
+            # The `print()` moves past the ^C / ^D the terminal echoed.
+            print()
             break
-        elif action == "r":
-            continue
-        else:
-            index += 1
 
 
 if __name__ == "__main__":
