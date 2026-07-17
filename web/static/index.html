@@ -19,6 +19,10 @@
 </head>
 <body>
 <h1>proscor-en &mdash; pronunciation practice</h1>
+<div id="customRow" style="margin-bottom: 1rem;">
+  <input id="customText" type="text" placeholder="Type a word or phrase to practice" style="font-size: 1rem; padding: 0.4rem; width: 60%;">
+  <button id="customBtn">Practice this</button>
+</div>
 <div id="prompt">Loading prompt&hellip;</div>
 <button id="playBtn">Play reference</button>
 <button id="recordBtn">Record</button>
@@ -50,16 +54,29 @@ const scoreEl = document.getElementById("score");
 const notesEl = document.getElementById("notes");
 const wordsTable = document.getElementById("wordsTable");
 const wordsBody = wordsTable.querySelector("tbody");
+const customText = document.getElementById("customText");
+const customBtn = document.getElementById("customBtn");
 
-async function loadPrompt() {
-  const res = await fetch("/api/prompt");
-  currentPrompt = await res.json();
+function resetForPrompt() {
   promptEl.textContent = currentPrompt.text;
   scoreEl.textContent = "";
   notesEl.textContent = "";
   wordsTable.style.display = "none";
   lastRecordingBlob = null;
   playRecordingBtn.disabled = true;
+}
+
+async function loadPrompt() {
+  const res = await fetch("/api/prompt");
+  currentPrompt = await res.json();
+  resetForPrompt();
+}
+
+function useCustomText() {
+  const text = customText.value.trim();
+  if (!text) return;
+  currentPrompt = { text, id: "custom" };
+  resetForPrompt();
 }
 
 async function playReference() {
@@ -202,6 +219,10 @@ function renderReport(report) {
 playBtn.addEventListener("click", playReference);
 playRecordingBtn.addEventListener("click", playMyRecording);
 nextBtn.addEventListener("click", loadPrompt);
+customBtn.addEventListener("click", useCustomText);
+customText.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") useCustomText();
+});
 
 recordBtn.addEventListener("click", async () => {
   if (!recording) {

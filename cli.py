@@ -10,6 +10,7 @@ from proscor.config import DEFAULT_PROMPTS_PATH, TTS_LANG
 def parse_args():
     p = argparse.ArgumentParser(description="proscor-en: English pronunciation scoring CLI")
     p.add_argument("--seconds", type=float, default=3.0, help="recording duration")
+    p.add_argument("--text", default=None, help="score a single custom word/phrase instead of looping through the prompt file")
     p.add_argument("--prompt-file", default=str(DEFAULT_PROMPTS_PATH))
     p.add_argument("--include-stress", action="store_true")
     p.add_argument("--model-dir", default=None, help="override ASR model dir")
@@ -58,11 +59,14 @@ def _action_loop(last_recording) -> str:
 
 def main():
     args = parse_args()
-    try:
-        prompt_list = prompts.load_prompts(args.prompt_file)
-    except FileNotFoundError:
-        print(f"Prompt file not found: {args.prompt_file}", file=sys.stderr)
-        sys.exit(1)
+    if args.text:
+        prompt_list = [{"id": 0, "text": args.text, "category": "custom"}]
+    else:
+        try:
+            prompt_list = prompts.load_prompts(args.prompt_file)
+        except FileNotFoundError:
+            print(f"Prompt file not found: {args.prompt_file}", file=sys.stderr)
+            sys.exit(1)
 
     index = 0
     while True:
