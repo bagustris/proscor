@@ -20,12 +20,9 @@ def parse_args():
 
 
 def _score_and_report(target_text: str, seconds: float, include_stress: bool, model_dir: str):
-    from proscor.asr import transcribe
-
     print(f"[recording {seconds:.0f}s...]")
     samples = audio.record(seconds)
-    result = transcribe(samples, model_dir=model_dir)
-    report = scorer.score(target_text, result, include_stress=include_stress)
+    report = scorer.score_audio(target_text, samples, include_stress=include_stress, model_dir=model_dir)
     print(fb.format_report(report))
     return samples
 

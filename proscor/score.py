@@ -122,3 +122,24 @@ def score(target_text: str, asr_result: dict, include_stress: bool = False, has_
     notes = "all words correct" if mispronounced == 0 else f"{mispronounced} of {len(words_report)} words mispronounced"
 
     return {"score": overall, "words": words_report, "notes": notes}
+
+
+def score_audio(target_text: str, samples, sr: int = 16000,
+                include_stress: bool = False, model_dir: str = None) -> dict:
+    """Score a recording against `target_text` -> ScoreReport.
+
+    Single-word targets use CTC forced alignment (proscor/align.py) — free
+    decoding of isolated short words is unreliable, see that module — and fall
+    back to the transcribe path if the alignment extras aren't installed.
+    Multi-word targets use the ASR transcribe + intelligibility path."""
+    words = target_text.split()
+    if len(words) == 1:
+        from proscor import align
+
+        if align.available():
+            return align.score_word(samples, words[0], sr=sr,
+                                    include_stress=include_stress, model_dir=model_dir)
+    from proscor.asr import transcribe
+
+    return score(target_text, transcribe(samples, sr=sr, model_dir=model_dir),
+                 include_stress=include_stress)

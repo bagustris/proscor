@@ -1,7 +1,4 @@
 """Transcribe recorded audio via sherox (sherpa-onnx) -> text + per-word timing."""
-import shutil
-import sys
-import tarfile
 from pathlib import Path
 
 import numpy as np
@@ -11,18 +8,6 @@ from proscor.config import ROOT, SAMPLE_RATE
 
 _REC = None
 _REC_MODEL_DIR = None
-
-# Default ASR model auto-download metadata.
-# Kept in sync with scripts/get_asr_model.sh and the k2-fsa/sherpa-onnx release
-# (https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models). The README
-# and CLAUDE.md promise the ASR model "auto-downloads into models/ on first use";
-# _ensure_asr_model() below honours that contract.
-_ASR_MODEL_NAME = "sherpa-onnx-nemo-ctc-en-conformer-medium"
-_ASR_MODEL_ARCHIVE = f"{_ASR_MODEL_NAME}.tar.bz2"
-_ASR_MODEL_URL = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
-    f"{_ASR_MODEL_ARCHIVE}"
-)
 
 
 def _cfg(model_dir: str, model_type: str):
@@ -35,65 +20,16 @@ def _cfg(model_dir: str, model_type: str):
     )
 
 
-def _model_ready(model_path: Path) -> bool:
-    """True when *model_path* holds the files sherpa-onnx needs to build the
-    recognizer — a tokens file and a model .onnx. The globs match the ones used
-    by sherox.asr_engine.build_offline_recognizer for the nemo_ctc path, so a
-    "ready" dir here is exactly what build_offline_recognizer will accept."""
-    return (
-        model_path.is_dir()
-        and any(model_path.glob("*tokens.txt"))
-        and any(model_path.glob("model*.onnx"))
-    )
-
-
-def _download_default_asr_model(target: Path) -> None:
-    """Download + extract the default NeMo CTC English model into target's
-    parent (the models/ root). Mirrors sherox's TTS auto-download
-    (sherox.tts._ensure_model) and scripts/get_asr_model.sh, reusing sherox's
-    resumable downloader and path-traversal-safe tar extraction."""
-    from sherox.utils import download_file, safe_tar_members
-
-    models_root = target.parent
-    models_root.mkdir(parents=True, exist_ok=True)
-    archive = models_root / _ASR_MODEL_ARCHIVE
-
-    print(
-        f"[proscor] ASR model not found — downloading {_ASR_MODEL_NAME} "
-        f"(~158 MB, one-time)…",
-        file=sys.stderr,
-    )
-    download_file(_ASR_MODEL_URL, archive)
-
-    print("[proscor] Extracting ASR model…", file=sys.stderr)
-    try:
-        with tarfile.open(archive, "r:bz2") as tf:
-            if sys.version_info >= (3, 12):
-                tf.extractall(models_root, filter="data")
-            else:  # pragma: no cover - depends on Python version
-                tf.extractall(models_root, members=safe_tar_members(tf, models_root))
-    except KeyboardInterrupt:
-        # Keep the downloaded archive (158 MB) so a retry doesn't re-fetch it;
-        # only the possibly-partial extraction needs to go.
-        shutil.rmtree(target, ignore_errors=True)
-        raise
-    except Exception as exc:
-        archive.unlink(missing_ok=True)
-        shutil.rmtree(target, ignore_errors=True)
-        raise RuntimeError(f"ASR model extraction failed: {exc}") from exc
-
-    archive.unlink(missing_ok=True)
-    if not _model_ready(target):
-        raise RuntimeError(
-            f"ASR model extraction did not produce the expected files in {target}"
-        )
-    print(f"[proscor] ASR model ready at {target}", file=sys.stderr)
-
-
 def _ensure_asr_model(model_dir: str) -> str:
     """Return an ASR model directory that exists, auto-downloading the bundled
     default NeMo CTC English model on first use so the CLI "just works" the
     first time (as documented in README.md / CLAUDE.md).
+
+    Delegates to sherox's model registry/downloader (sherox.asr_engine.
+    ensure_model_dir) rather than reimplementing archive download + extraction
+    here — this also means the download is shared across every project on
+    this machine that uses sherox (see sherox.model_cache): if a sibling repo
+    already pulled the same model, it's symlinked in instead of refetched.
 
     Only the default model (config.ASR_MODEL_DIR) is auto-fetched — a custom
     --model-dir is the caller's responsibility and is returned unchanged, so a
@@ -104,10 +40,10 @@ def _ensure_asr_model(model_dir: str) -> str:
         return model_dir
     path = Path(model_dir)
     target = path.resolve() if path.is_absolute() else (ROOT / path).resolve()
-    if _model_ready(target):
-        return str(target)
-    _download_default_asr_model(target)
-    return str(target)
+
+    from sherox.asr_engine import ensure_model_dir
+
+    return ensure_model_dir(str(target), config.ASR_MODEL_TYPE)
 
 
 def _recognizer(model_dir: str = None, model_type: str = None):

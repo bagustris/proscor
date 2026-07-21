@@ -6,3 +6,5 @@ uvicorn[standard]>=0.27
 python-multipart>=0.0.9  # required by FastAPI for the /api/score file+form upload
 rapidfuzz>=3.6
 pydantic>=2.5
+onnxruntime>=1.17         # single-word forced-alignment scoring (proscor/align.py)
+kaldi_native_fbank>=1.20  # feature extraction for proscor/align.py

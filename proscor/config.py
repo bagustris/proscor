@@ -23,5 +23,16 @@ CONF_WEIGHT = 0.2
 INTELLIGIBILITY_WEIGHT = 0.6
 GOP_WEIGHT = 0.4
 
+# Single-word forced-alignment scoring (proscor/align.py):
+# score = 100 * (ALIGN_POSTERIOR_WEIGHT * sigmoid(margin + ALIGN_TARGET_PRIOR)
+#                + ALIGN_GOP_WEIGHT * exp(gop / ALIGN_GOP_SCALE))
+# where margin = loglik(target) - loglik(best confusable).
+ALIGN_POSTERIOR_WEIGHT = 0.6
+ALIGN_GOP_WEIGHT = 0.4
+ALIGN_GOP_SCALE = 2.0
+ALIGN_TARGET_PRIOR = 1.0   # benefit of the doubt: the learner is trying to say the target
+ALIGN_MIN_FIT = 0.35       # exp(gop/scale) below this vetoes "correct" (unrelated word said)
+ALIGN_MAX_CONFUSABLES = 40
+
 DEFAULT_LEXICON_PATH = DATA_DIR / "lexicon.txt"
 DEFAULT_PROMPTS_PATH = DATA_DIR / "prompts.txt"

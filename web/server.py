@@ -6,7 +6,6 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from proscor import audio, feedback, prompts, score as scorer
-from proscor.asr import transcribe
 from proscor.tts import reference_bytes
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -33,8 +32,7 @@ async def api_score(audio_file: UploadFile = File(..., alias="audio"), target_te
         tmp.flush()
         samples, sr = audio.load_wav(tmp.name)
 
-    result = transcribe(samples, sr)
-    report = scorer.score(target_text, result)
+    report = scorer.score_audio(target_text, samples, sr=sr)
     report["feedback"] = feedback.format_report(report)
     return report
 
