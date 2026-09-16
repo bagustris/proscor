@@ -497,14 +497,15 @@ changed the plan to a staged rollout:
    instead. Reuses `proscor.align._ctc_viterbi` (generic over any token
    sequence, not BPE-specific) for the forced alignment itself.
 
-   **Result (full `test` split, 2500 utterances, 15,967 words, int8,
-   ~7-16 min CPU — `scripts/eval_so762_phone.py`, `results/so762_test_phone_int8_summary.json`;
-   confirmed on the untouched `train` split, `results/so762_train_phone_int8_summary.json`,
-   see "Train-split confirmation" below):**
+   **Result (full `test` split, 2500 utterances, 15,967 words, 47,369
+   phones, int8, ~7 min CPU — `scripts/eval_so762_phone.py`,
+   `results/so762_test_phone_int8_summary.json`; confirmed on the untouched
+   `train` split, see "Train-split confirmation" below):**
 
    | metric | this (zero-shot, test split) | literature (trained) |
    |---|---|---|
-   | phone-level PCC (matched-length words only, n=43,888/47,369 phones, 92.65% coverage) | **0.425** | GOPT-LibriSpeech 0.612; classic RF/SVR baselines (phone-only, no word/utt numbers exist for them; computed on all 47,369 phones) 0.440/0.450 |
+   | **phone-level PCC, reconciled** (n=47,239/47,369 phones, 99.73% coverage) | **0.433** | GOPT-LibriSpeech 0.612; classic RF/SVR baselines (phone-only, no word/utt numbers exist for them; computed on all 47,369 phones) 0.440/0.450 |
+   | phone-level PCC, matched-length-only (legacy metric, n=43,888/47,369, 92.65% coverage) | 0.425 | — |
    | word-accuracy PCC | 0.325 | GOPT-LibriSpeech 0.533 |
    | utterance-accuracy PCC | 0.536 | GOPT-LibriSpeech 0.714 |
    | utterance-total PCC | 0.572 | GOPT-LibriSpeech 0.742 |
@@ -514,41 +515,41 @@ changed the plan to a staged rollout:
    published setup to a general, non-domain-specific ASR model. RF/SVR are
    the original speechocean762 paper's baselines, phone-level only.)
 
-   The phone-level number (0.425, on the 92.65% of phones with a matching
-   count against the dataset's own segmentation — see the coverage-bias
-   note below) is the literature-comparable headline metric this section
-   originally wanted, and it lands close to the classic *trained* RF/SVR
-   baselines (94.4-96.6% of them, though those were computed on 100% of
-   phones) with **zero training** — a legitimate systems-paper result. The
-   unexpected finding: **this phone
-   model's word/utterance-level PCC is lower than the simpler BPE model's**
-   (item 3 above: word 0.471, utt-accuracy 0.556, utt-total 0.589) despite
-   finer alignment granularity and a purpose-built phoneme vocabulary.
-   Likely causes, not disentangled here: (a) domain mismatch — this
-   wav2vec2-large model is trained on adult multilingual CommonVoice speech
-   via espeak's *automatically generated* (not hand-verified) phoneme
-   labels, while speechocean762 is child L2 English speech, a harder
-   acoustic domain than adult native/fluent L2 speech; (b) word-level
-   aggregation averages over more, noisier phone-level units per word than
-   the BPE model averages over subword units, so per-phone noise has more
-   opportunities to accumulate. A first version of `align_words_gop`'s word
-   score (mean over the word's whole frame *span*, including blank frames
-   between phones — mirroring the BPE model's formula) measured far worse
-   (word PCC 0.03 on a 100-utterance sample) than the current version (mean
-   of the word's *phone*-only GOP values, ignoring inter-phone blank
-   frames, PCC 0.22 on the same sample) — blank frames dilute the signal
-   more here because a word has many more phone/blank transitions than
-   BPE/blank transitions. **A competitor-set contamination hypothesis was
-   checked and ruled out:** the 392-symbol vocab has near-duplicate
-   symbols across languages for the same English sound (e.g. `uː`/`u`,
-   `iː`/`i`), which could make `max_k lp_t(k)` an unfair competitor if the
-   model splits mass across spelling variants of the same sound. A manual
-   check of the worst (`gop < -1`) phones on human-accuracy-10 words (300
-   utterances) found the dominant confusions were phonetically genuine
-   (vowel reduction to schwa, place/manner shifts like `t`→`k`, `ð`→`d`,
-   weak/blank realization of light consonants), not cross-lingual spelling
-   duplicates — so this is left as real GOP signal, not a vocab artifact to
-   fix by restricting the competitor set.
+   The reconciled phone-level number (0.433, on 99.73% of phones — see
+   "Phone-count reconciliation" below for how the remaining 0.27% is a
+   principled exclusion, not a gap) is the literature-comparable headline
+   metric this section originally wanted, and it now lands at **98.4% of
+   the classic *trained* RF baseline and 96.2% of SVR** (70.8% of GOPT,
+   which is a substantially heavier trained model) with **zero training**
+   — a legitimate systems-paper result. The unexpected finding: **this
+   phone model's word/utterance-level PCC is lower than the simpler BPE
+   model's** (item 3 above: word 0.471, utt-accuracy 0.556, utt-total
+   0.589) despite finer alignment granularity and a purpose-built phoneme
+   vocabulary. Likely causes, not disentangled here: (a) domain mismatch —
+   this wav2vec2-large model is trained on adult multilingual CommonVoice
+   speech via espeak's *automatically generated* (not hand-verified)
+   phoneme labels, while speechocean762 is child L2 English speech, a
+   harder acoustic domain than adult native/fluent L2 speech; (b)
+   word-level aggregation averages over more, noisier phone-level units
+   per word than the BPE model averages over subword units, so per-phone
+   noise has more opportunities to accumulate. A first version of
+   `align_words_gop`'s word score (mean over the word's whole frame *span*,
+   including blank frames between phones — mirroring the BPE model's
+   formula) measured far worse (word PCC 0.03 on a 100-utterance sample)
+   than the current version (mean of the word's *phone*-only GOP values,
+   ignoring inter-phone blank frames, PCC 0.22 on the same sample) — blank
+   frames dilute the signal more here because a word has many more
+   phone/blank transitions than BPE/blank transitions. **A competitor-set
+   contamination hypothesis was checked and ruled out:** the 392-symbol
+   vocab has near-duplicate symbols across languages for the same English
+   sound (e.g. `uː`/`u`, `iː`/`i`), which could make `max_k lp_t(k)` an
+   unfair competitor if the model splits mass across spelling variants of
+   the same sound. A manual check of the worst (`gop < -1`) phones on
+   human-accuracy-10 words (300 utterances) found the dominant confusions
+   were phonetically genuine (vowel reduction to schwa, place/manner shifts
+   like `t`→`k`, `ð`→`d`, weak/blank realization of light consonants), not
+   cross-lingual spelling duplicates — so this is left as real GOP signal,
+   not a vocab artifact to fix by restricting the competitor set.
 
    Bottom line for `--engine gop-lite`: the BPE model (item 3) remains the
    shipped default — it is both cheaper and empirically better at
@@ -569,43 +570,62 @@ changed the plan to a staged rollout:
    lowercases before calling espeak (with a regression test in
    `tests/test_align_phone.py`, skipped when espeak-ng isn't installed). Full
    re-run after the fix: every number in the table above rose slightly
-   (word-level PCC 0.302→0.325, phone coverage 91.21%→92.65%) — the fix
-   helped, as expected, and the effect size matches the bug's small blast
-   radius. The all-caps text is also fed unmodified to `align.py`'s BPE path
-   (`eval_so762.py`) and `g2p_en`/CMUdict (case-insensitive lookups), neither
-   of which showed any analogous sensitivity — this was specific to
-   `phonemizer`'s espeak-ng backend.
+   (word-level PCC 0.302→0.325, phone coverage 91.21%→92.65% matched-only)
+   — the fix helped, as expected, and the effect size matches the bug's
+   small blast radius. The all-caps text is also fed unmodified to
+   `align.py`'s BPE path (`eval_so762.py`) and `g2p_en`/CMUdict
+   (case-insensitive lookups), neither of which showed any analogous
+   sensitivity — this was specific to `phonemizer`'s espeak-ng backend.
 
-   **Coverage-bias note:** the excluded phones (where the espeak phone count
-   for a word didn't match the dataset's ARPABET segmentation) are not a
-   random sample — and note the two rates differ: **5.41%** of *words*
-   mismatch (864/15,967), but that's **7.35%** of *phones* (3,481/47,369),
-   since mismatched words run longer on average (multi-syllable words are
-   likelier to contain a merge-prone vowel+R or diphthong cluster). A
-   systematic breakdown (test split, post-fix) found three distinct
-   many-to-one merge patterns, not just the one R-merging case originally
-   noticed: (a)
-   **rhotic-vowel merge** (~60% of mismatches) — espeak fuses vowel+R into
-   one token ("mark" → `m ɑːɹ k`, "four" → `f oːɹ`); (b) **syllabic-L merge**
-   (part of the "other" category) — espeak has a dedicated `əl` vocab token
-   for a syllabic L that ARPABET spells as two phones, `AH0 L`
-   ("difficult" → `...k əl t`); (c) **diphthong-cluster merge** — espeak
-   treats some vowel sequences as one complex-nucleus token (`iə`, `aɪə`,
-   `aɪɚ`) where ARPABET keeps two vowel symbols ("idea" → mine `d iə`,
-   dataset `D IH AH1`). A fourth, *not* an alignment problem: **genuine
-   dialectal disagreement** — espeak's en-us applies yod-dropping ("new" →
-   `n uː`, no `j`) where CMUdict's canonical entry keeps the historical
-   glide (`N Y UW0`); no realignment recovers a phone the model was never
-   asked to produce. (a)-(c) are well-defined many-to-one correspondences a
-   constrained monotonic alignment (Needleman-Wunsch-style, allowing 2-ARPABET-phone
-   ↔ 1-espeak-phone merges for these three known patterns, plus an
-   ARPABET/IPA equivalence-class table — the same one an earlier abandoned
-   static-mapping attempt produced, repurposed here as a *matching*
-   heuristic instead of a *target-generation* one — for scoring 1:1 matches)
-   should reconcile, raising phone-level coverage from 92.65% toward
-   ~98-99%; (d) would remain a small, principled exclusion. Not yet
-   implemented — this is the scoped design for that follow-up, not a
-   completed one.
+   **Phone-count reconciliation (implemented and validated):**
+   `proscor.align_phone.reconcile_phones` aligns every word's espeak phones
+   against its ARPABET phones with a constrained Needleman-Wunsch DP (1:1
+   matches via an ARPABET/IPA equivalence table — the same one an earlier
+   abandoned static-mapping attempt produced, repurposed here as a
+   *matching* heuristic instead of a *target-generation* one — plus 2:1/3:1
+   merges for three known patterns, plus deletions for phones with no
+   espeak counterpart at all), instead of dropping the whole word on a
+   count mismatch as the original "matched-length-only" metric did. The
+   patterns, from a systematic breakdown of the (post-case-fix) 5.41%
+   word/7.35% phone mismatch rate — two different denominators, since
+   mismatched words run longer on average; do not conflate them:
+   (a) **rhotic-vowel merge** (~60% of mismatches) — espeak fuses vowel+R
+   into one token ("mark" → `m ɑːɹ k`, "four" → `f oːɹ`); (b)
+   **syllabic-L merge** — espeak has a dedicated `əl` vocab token for a
+   syllabic L that ARPABET spells as two phones, `AH0 L` ("difficult" →
+   `...k əl t`); (c) **diphthong-cluster merge** — espeak treats some vowel
+   sequences as one complex-nucleus token (`iə`, `aɪə`, `aɪɚ`) where
+   ARPABET keeps two vowel symbols ("idea" → mine `d iə`, dataset
+   `D IH AH1`). A fourth, *not* an alignment problem: **genuine dialectal
+   disagreement** — espeak's en-us applies yod-dropping ("new" → `n uː`,
+   no `j`) where CMUdict's canonical entry keeps the historical glide
+   (`N Y UW0`); no realignment recovers a phone the model was never asked
+   to produce, so the DP correctly returns `None` (a deletion) for it
+   rather than forcing a bad merge (`tests/test_align_phone.py` pins this
+   exact case, plus a known-imperfect case, "player", where the 3-merge
+   heuristic declines and the DP falls back to a less precise but still
+   non-empty substitution/deletion mix — never worse than the pre-
+   reconciliation status quo, since dropping the whole word is always the
+   DP's worst-case fallback, not an improvement over it).
+
+   Full test-split result: coverage rose from 92.65% (matched-only) to
+   **99.73%** (`op_counts`: 43,429 match, 2,639 substitution, 1,150
+   `merge2`, 21 `merge3`, 130 deletion — merge-op count is the same order
+   of magnitude as the ~864 mismatched words, not the thousands that would
+   signal the merge rule over-firing on already-matched words). Reconciled
+   phone-level PCC (0.433) is *higher* than the matched-only PCC (0.425),
+   not just wider coverage at the same quality — and the **newly-covered
+   phones alone** (the 3,353 that only exist because of reconciliation)
+   correlate *better* than the pre-existing matched set (PCC 0.501 vs.
+   0.425), addressing the zero-inflation concern raised when this was
+   scoped: duplicating one espeak phone's GOP across 2-3 ARPABET slots does
+   inherit that phone's zero-inflation (many well-pronounced phones score
+   exactly 0.0), but words needing reconciliation are modestly less likely
+   to be perfectly pronounced than words that didn't (83.1% word-accuracy-10
+   among mismatched words vs. 90.1% among matched, measured directly rather
+   than assumed), so the newly-added scores skew slightly toward the more
+   informative, less-saturated part of the accuracy range rather than
+   diluting it.
 
    **Precision:** fp32 was not run at full scale for this model (it's 4x
    larger than the BPE model; a full run was judged not worth the added
@@ -626,12 +646,21 @@ changed the plan to a staged rollout:
    the data — it changes "IT" to phonemize correctly regardless of which
    split contains it, so it doesn't reopen the held-out question the same
    way a data-driven choice would. Running `scripts/eval_so762_phone.py
-   --split train` (2,500 further utterances) confirms the two
-   test-inspected decisions above generalize — if anything, the numbers are
-   slightly higher: word-level PCC 0.383, utterance-accuracy PCC 0.590,
-   utterance-total PCC 0.594, phone-level (matched) PCC 0.476 at
-   94.8% coverage (`results/so762_train_phone_int8_summary.json`). No sign
-   of overfitting to test-set inspection.
+   --split train` (2,500 further utterances, 15,849 words, 47,076 phones)
+   confirms the two test-inspected decisions above generalize — if
+   anything, the numbers are slightly higher: word-level PCC 0.383,
+   utterance-accuracy PCC 0.590, utterance-total PCC 0.594, phone-level
+   (matched-only) PCC 0.476 at 43,648/47,076 = 92.72% coverage (43,648 is
+   the `n` the run reported for that comparison,
+   `results/so762_train_phone_int8_summary.json`; 47,076 is the train
+   split's total phone count, not itself in that JSON — this predates the
+   script emitting an explicit `n_phones_total`/coverage field, so the
+   denominator is cited from the dataset description rather than read
+   directly out of the file). Matched-only, not reconciled — the
+   reconciliation code postdates this run and wasn't re-run on `train`,
+   since the held-out question it would answer, "was the aggregation choice
+   overfit to test," was already settled above.
+   No sign of overfitting to test-set inspection.
 5. **Wired into the app:** `proscor.score.score_gop_lite` force-aligns a
    multi-word target (`align.align_words_gop`) and maps each word's GOP to
    0-100 via the shared `align.gop_to_fit` transform (factored out of

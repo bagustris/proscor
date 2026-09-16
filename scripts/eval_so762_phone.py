@@ -9,25 +9,31 @@ has no phone-level output). align_phone.py uses a genuine phoneme-CTC model
 with espeak-ng (the same tool that produced the model's training labels) to
 get the target phone sequence.
 
-Three comparisons are reported:
+Comparisons reported:
 1. **Word-level** (comparable to scripts/eval_so762.py's BPE-model 0.471 and
    to GOPT's 0.533, Table 1 of arXiv:2205.03432): mean phone GOP per word
    vs. the dataset's per-word `accuracy` (0-10). Finer-grained than the BPE
    version's word aggregation, but empirically *lower* correlation than it
    -- see PLAN.md section 5a item 4 for the full comparison and discussion.
 2. **Utterance-level**: mean word GOP vs. sentence `accuracy`/`total`.
-3. **Direct per-phone** (the literature-comparable headline number, but
-   coverage-limited): espeak's phones for a word don't always line up 1:1
-   with the dataset's own ARPABET phone segmentation (e.g. espeak merges
+3. **Direct per-phone, matched-length-only** (legacy metric, kept for
+   comparison): espeak's phones for a word don't always line up 1:1 with
+   the dataset's own ARPABET phone segmentation (e.g. espeak merges
    vowel+R into one rhotic token: "ɑːɹ" for the vowel in "mark" vs. the
    dataset's separate AA/R) -- see proscor/align_phone.py's docstring. This
    comparison only uses words where the phone COUNTS happen to match,
    zipping the two sequences by position without checking phone identity.
-   The excluded words are not a random sample (disproportionately
-   vowel+R words), so this is an *approximation with an unknown bias
-   direction*, not a lower or upper bound -- not the rigorous phone-aligned
-   metric a DTW reconciliation would give (a documented follow-up, see
-   PLAN.md section 5a).
+4. **Direct per-phone, reconciled** (the headline number):
+   `align_phone.reconcile_phones` aligns every word's espeak phones against
+   its ARPABET phones with a constrained DP (1:1 matches plus 2:1/3:1
+   merges for known patterns), so words with a phone-count mismatch
+   contribute real (if occasionally approximate) GOP estimates instead of
+   being dropped entirely. Reported alongside a **reconciled-only** row
+   (just the phones a length-mismatched word contributed, i.e. genuinely
+   new coverage) so a reader can see whether the newly-recovered phones
+   correlate as well as the already-matched ones. `op_counts` in the output
+   tallies how the DP resolved every dataset phone (match/sub/merge2/
+   merge3/del) as a sanity check against over-firing.
 
 Usage:
     pip install -r requirements-eval.txt   # + phonemizer (needs system espeak-ng)
@@ -64,8 +70,12 @@ def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
     word_gop, word_acc = [], []
     utt_gop_mean, utt_acc, utt_total = [], [], []
     phone_gop_matched, phone_acc_matched = [], []
+    phone_gop_reconciled, phone_acc_reconciled = [], []
+    phone_gop_newly_covered, phone_acc_newly_covered = [], []
+    op_counts = defaultdict(int)
     n_words_total = n_words_aligned = 0
     n_words_len_matched = 0
+    n_phones_total = 0
     t0 = time.time()
 
     for i, row in enumerate(rows):
@@ -87,13 +97,30 @@ def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
             word_acc.append(w["accuracy"])
             this_utt_gops.append(wg["gop"])
 
+            dataset_phones = w["phones"]
             ph_acc = w["phones-accuracy"]
-            if len(pg) == len(ph_acc) and len(pg) > 0:
+            n_phones_total += len(dataset_phones)
+            length_matched = len(pg) == len(ph_acc) and len(pg) > 0
+            if length_matched:
                 n_words_len_matched += 1
                 for p, a in zip(pg, ph_acc):
                     if p is not None:
                         phone_gop_matched.append(p["gop"])
                         phone_acc_matched.append(a)
+
+            espeak_phones = [p["phone"] for p in pg if p is not None]
+            espeak_gops = [p["gop"] for p in pg if p is not None]
+            if espeak_phones and dataset_phones:
+                rec_gops, rec_ops = align_phone.reconcile_phones(dataset_phones, espeak_phones, espeak_gops)
+                for g, a, op in zip(rec_gops, ph_acc, rec_ops):
+                    op_counts[op] += 1
+                    if g is None:
+                        continue
+                    phone_gop_reconciled.append(g)
+                    phone_acc_reconciled.append(a)
+                    if not length_matched:
+                        phone_gop_newly_covered.append(g)
+                        phone_acc_newly_covered.append(a)
 
         if this_utt_gops:
             utt_gop_mean.append(float(np.mean(this_utt_gops)))
@@ -109,8 +136,12 @@ def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
         "word_gop": word_gop, "word_acc": word_acc,
         "utt_gop_mean": utt_gop_mean, "utt_acc": utt_acc, "utt_total": utt_total,
         "phone_gop_matched": phone_gop_matched, "phone_acc_matched": phone_acc_matched,
+        "phone_gop_reconciled": phone_gop_reconciled, "phone_acc_reconciled": phone_acc_reconciled,
+        "phone_gop_newly_covered": phone_gop_newly_covered, "phone_acc_newly_covered": phone_acc_newly_covered,
+        "op_counts": dict(op_counts),
         "n_utterances": len(rows), "n_words_total": n_words_total,
         "n_words_aligned": n_words_aligned, "n_words_len_matched": n_words_len_matched,
+        "n_phones_total": n_phones_total,
         "elapsed_s": time.time() - t0,
     }
 
@@ -165,8 +196,17 @@ def main():
     word_corr = correlations(results["word_gop"], results["word_acc"])
     utt_corr_acc = correlations(results["utt_gop_mean"], results["utt_acc"])
     utt_corr_total = correlations(results["utt_gop_mean"], results["utt_total"])
-    phone_corr = correlations(results["phone_gop_matched"], results["phone_acc_matched"])
+    phone_corr_matched = correlations(results["phone_gop_matched"], results["phone_acc_matched"])
+    phone_corr_reconciled = correlations(results["phone_gop_reconciled"], results["phone_acc_reconciled"])
+    phone_corr_newly_covered = correlations(results["phone_gop_newly_covered"], results["phone_acc_newly_covered"])
     buckets = bucket_by_accuracy(results["word_gop"], results["word_acc"])
+
+    # Two different denominators on purpose -- do not conflate them (see
+    # PLAN.md section 5a item 4, "phone coverage" vs. "word match rate" were
+    # mixed up twice before this explicit split was added).
+    word_match_rate = round(results["n_words_len_matched"] / max(1, results["n_words_aligned"]), 4)
+    phone_coverage_matched = round(len(results["phone_gop_matched"]) / max(1, results["n_phones_total"]), 4)
+    phone_coverage_reconciled = round(len(results["phone_gop_reconciled"]) / max(1, results["n_phones_total"]), 4)
 
     summary = {
         "split": args.split,
@@ -176,12 +216,18 @@ def main():
         "n_words_aligned": results["n_words_aligned"],
         "align_rate": round(results["n_words_aligned"] / max(1, results["n_words_total"]), 4),
         "n_words_len_matched": results["n_words_len_matched"],
-        "phone_count_match_rate": round(results["n_words_len_matched"] / max(1, results["n_words_aligned"]), 4),
+        "word_match_rate": word_match_rate,
+        "n_phones_total": results["n_phones_total"],
+        "phone_coverage_matched_only": phone_coverage_matched,
+        "phone_coverage_reconciled": phone_coverage_reconciled,
+        "op_counts": results["op_counts"],
         "elapsed_s": round(results["elapsed_s"], 1),
         "word_level_vs_word_accuracy": word_corr,
         "utterance_level_vs_accuracy": utt_corr_acc,
         "utterance_level_vs_total": utt_corr_total,
-        "phone_level_vs_phones_accuracy_MATCHED_LENGTH_ONLY": phone_corr,
+        "phone_level_matched_only": phone_corr_matched,
+        "phone_level_reconciled": phone_corr_reconciled,
+        "phone_level_newly_covered_only": phone_corr_newly_covered,
         "mean_gop_by_word_accuracy": buckets,
     }
     print(json.dumps(summary, indent=2))

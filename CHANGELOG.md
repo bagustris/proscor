@@ -45,17 +45,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model (`wav2vec2-lv-60-espeak-cv-ft`, espeak-ng IPA output), with targets
   phonemized live via `phonemizer`/espeak-ng rather than a hand-built
   ARPABET→IPA table. `scripts/eval_so762_phone.py`: full `test` split
-  phone-level Pearson r = 0.425 (92.65% coverage vs. the dataset's own phone
-  segmentation) — ~95% of the classic trained RF/SVR baselines' PCC,
-  zero-shot; confirmed (not lower) on the untouched `train` split
-  (r = 0.476). Word/utterance-level PCC (0.325 / 0.536 / 0.572) trail the
-  simpler BPE model, so the BPE model stays the shipped `--engine gop-lite`
-  default; see `PLAN.md` section 5a item 4 for the full comparison, the
-  root-caused aggregation bug fix along the way (word GOP as mean of
-  per-phone GOP, not mean over the whole frame span including blanks), and
-  the scoped-but-not-yet-built DTW reconciliation for the uncovered 7.4% of
-  phones. New `requirements-eval.txt` entry: `phonemizer` (needs system
-  espeak-ng).
+  reconciled phone-level Pearson r = 0.433 at 99.73% coverage (98.4%/96.2%
+  of the classic trained RF/SVR baselines' PCC, zero-shot); confirmed (not
+  lower) on the untouched `train` split at the pre-reconciliation
+  matched-only metric (r = 0.476). Word/utterance-level PCC
+  (0.325 / 0.536 / 0.572) trail the simpler BPE model, so the BPE model
+  stays the shipped `--engine gop-lite` default; see `PLAN.md` section 5a
+  item 4 for the full comparison, the root-caused aggregation bug fix along
+  the way (word GOP as mean of per-phone GOP, not mean over the whole frame
+  span including blanks), and the `reconcile_phones` constrained-alignment
+  design (1:1 ARPABET/IPA equivalence matches plus 2:1/3:1 merges for three
+  known espeak segmentation patterns, plus principled deletions for
+  phones with no espeak counterpart at all, e.g. yod-dropping). New
+  `requirements-eval.txt` entry: `phonemizer` (needs system espeak-ng).
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`

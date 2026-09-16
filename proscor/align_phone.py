@@ -19,6 +19,7 @@ entirely — phonemizing live with espeak reproduces whatever convention the
 model actually learned instead of guessing it.
 """
 import json
+import re
 from functools import lru_cache
 
 import numpy as np
@@ -181,3 +182,156 @@ def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
             word_gop.append(None)
 
     return {"word_gop": word_gop, "phone_gop": phone_gop}
+
+
+# --- ARPABET <-> espeak-IPA reconciliation (PLAN.md section 5a item 4) -----
+#
+# `align_words_gop`'s phone_gop is keyed by *espeak's* phone segmentation,
+# which doesn't always have the same phone count as speechocean762's own
+# ARPABET segmentation for a word (94.6% of words match; see PLAN.md). Three
+# distinct many-to-one patterns cause most mismatches:
+#   (a) rhotic-vowel merge: espeak fuses vowel+R into one token
+#       ("mark" -> "m ɑːɹ k", ARPABET "M AA0 R K")
+#   (b) syllabic-L merge: espeak's vocab has a dedicated "əl" token for a
+#       syllabic L that ARPABET spells as two phones, AH0 L
+#       ("difficult" -> "...k əl t")
+#   (c) diphthong-cluster merge: espeak treats some vowel sequences as one
+#       complex-nucleus token ("iə", "aɪə", "aɪɚ") where ARPABET keeps two
+#       vowel symbols ("idea" -> "d iə" vs "D IH AH1")
+# A fourth cause is *not* reconcilable: genuine dialectal disagreement
+# (espeak's en-us applies yod-dropping, "new" -> "n uː", no /j/, where
+# CMUdict's canonical entry keeps the historical glide "N Y UW0"). No
+# realignment recovers a phone the model was never asked to produce.
+#
+# `reconcile_phones` aligns the two segmentations with a constrained
+# Needleman-Wunsch DP (1:1 matches via an ARPABET/IPA equivalence table,
+# plus 2:1/3:1 merges for (a)-(c)) so every ARPABET phone gets a GOP
+# estimate where possible, instead of discarding the whole word on a count
+# mismatch. A merge duplicates one espeak phone's GOP across the 2-3
+# ARPABET phones it represents -- an approximation (one frame region can't
+# be split further), not a precise per-phone estimate for those slots.
+
+_ARPABET_EQUIV = {
+    "AA": {"ɑː", "ɑ", "ɒ"}, "AE": {"æ"}, "AH": {"ʌ", "ə", "ɐ"},
+    "AO": {"ɔː", "ɔ", "oː", "o"}, "AW": {"aʊ"}, "AY": {"aɪ"},
+    "B": {"b"}, "CH": {"tʃ"}, "D": {"d", "ɾ"}, "DH": {"ð"}, "EH": {"ɛ"},
+    "ER": {"ɜː", "ɚ", "ɝ"}, "EY": {"eɪ"}, "F": {"f"}, "G": {"ɡ"}, "HH": {"h"},
+    "IH": {"ɪ", "ᵻ", "i"}, "IY": {"iː", "i"}, "JH": {"dʒ"}, "K": {"k"},
+    "L": {"l", "ɫ"}, "M": {"m"}, "N": {"n"}, "NG": {"ŋ"}, "OW": {"oʊ"},
+    "OY": {"ɔɪ"}, "P": {"p"}, "R": {"ɹ", "r"}, "S": {"s"}, "SH": {"ʃ"},
+    "T": {"t", "ɾ", "ʔ"}, "TH": {"θ"}, "UH": {"ʊ"}, "UW": {"uː", "u"},
+    "V": {"v"}, "W": {"w"}, "Y": {"j"}, "Z": {"z"}, "ZH": {"ʒ"},
+}
+# Symbols that can stand in for a trailing R, or for AH0 acting as a
+# rhotic offglide in place of a separate R phone (e.g. "entire" -> "IH0 N
+# T AY1 AH0", no R phone at all, matched against espeak's "aɪɚ").
+_RHOTIC_TAIL = {"ɹ", "ɚ", "ɜː", "r"}
+
+
+_DEL_COST = 1.0
+_INS_COST = 1.0
+_SUB_COST = 0.9  # strictly < _DEL_COST: a mismatched-but-real GOP is more
+                 # informative than no GOP at all, so a substitution always
+                 # wins over discarding the phone, not just on a tie.
+_MERGE_COST = 0.5
+
+
+def _stress_strip(phone: str) -> str:
+    return re.sub(r"\d", "", phone)
+
+
+def _strip_length(s: str) -> str:
+    return s.replace("ː", "")
+
+
+def _match_cost(arpabet_phone: str, espeak_phone: str) -> float:
+    """0.0 if same equivalence class (stress-agnostic), else SUB_COST."""
+    equiv = _ARPABET_EQUIV.get(_stress_strip(arpabet_phone), set())
+    if espeak_phone in equiv:
+        return 0.0
+    stripped = _strip_length(espeak_phone)
+    if stripped in {_strip_length(e) for e in equiv}:
+        return 0.0
+    return _SUB_COST
+
+
+def _merge_compatible(espeak_token: str, arpabet_phones: list) -> bool:
+    """True if `espeak_token` plausibly represents the 2-3 `arpabet_phones`
+    merged together: its (length-mark-stripped) text starts with a
+    representative of the first phone's equivalence class, and either ends
+    with a representative of the last phone's, or the last phone is
+    R/ER/AH0 (rhoticity) and the token ends in a rhotic-tail symbol. This is
+    a heuristic, not a proof -- see the "player" case in
+    tests/test_align_phone.py for a known pattern it doesn't catch (the DP's
+    del/ins fallback still applies, it just can't do better than the
+    status quo for that word)."""
+    if len(arpabet_phones) not in (2, 3):
+        return False
+    first, last = _stress_strip(arpabet_phones[0]), _stress_strip(arpabet_phones[-1])
+    tok = _strip_length(espeak_token)
+
+    first_equiv = {_strip_length(e) for e in _ARPABET_EQUIV.get(first, set())}
+    first_ok = any(e and tok.startswith(e) for e in first_equiv)
+
+    if last in ("R", "ER") or (last == "AH" and arpabet_phones[-1].endswith("0")):
+        last_ok = tok and (tok[-1] in "ɹɚr" or tok.endswith(tuple(_strip_length(s) for s in _RHOTIC_TAIL)))
+    else:
+        last_equiv = {_strip_length(e) for e in _ARPABET_EQUIV.get(last, set())}
+        last_ok = any(e and tok.endswith(e) for e in last_equiv)
+    return bool(first_ok and last_ok)
+
+
+def reconcile_phones(dataset_phones: list, espeak_phones: list, espeak_gops: list) -> tuple:
+    """Align `dataset_phones` (ARPABET, the reference) against
+    `espeak_phones`/`espeak_gops` (this word's espeak IPA phones and their
+    GOP scores from `phone_gop`) via a constrained Needleman-Wunsch DP.
+    Returns `(gops, ops)`: `gops` has one GOP-or-None per dataset phone
+    (None = a genuine deletion, e.g. yod-dropping -- no evidence exists);
+    `ops` is the parallel list of {"match","sub","merge2","merge3","del"}
+    for diagnostics (scripts/eval_so762_phone.py reports op-type counts to
+    catch over/under-firing of the merge rule)."""
+    N, K = len(dataset_phones), len(espeak_phones)
+    INF = float("inf")
+    cost = [[INF] * (K + 1) for _ in range(N + 1)]
+    back = [[None] * (K + 1) for _ in range(N + 1)]
+    cost[0][0] = 0.0
+
+    for i in range(N + 1):
+        for j in range(K + 1):
+            if i == 0 and j == 0:
+                continue
+            best, best_op = INF, None
+            if i > 0 and j > 0:
+                c = _match_cost(dataset_phones[i - 1], espeak_phones[j - 1])
+                op = "match" if c == 0.0 else "sub"
+                if cost[i - 1][j - 1] + c < best:
+                    best, best_op = cost[i - 1][j - 1] + c, (1, 1, op)
+            if i > 1 and j > 0 and _merge_compatible(espeak_phones[j - 1], dataset_phones[i - 2:i]):
+                if cost[i - 2][j - 1] + _MERGE_COST < best:
+                    best, best_op = cost[i - 2][j - 1] + _MERGE_COST, (2, 1, "merge2")
+            if i > 2 and j > 0 and _merge_compatible(espeak_phones[j - 1], dataset_phones[i - 3:i]):
+                if cost[i - 3][j - 1] + _MERGE_COST < best:
+                    best, best_op = cost[i - 3][j - 1] + _MERGE_COST, (3, 1, "merge3")
+            if i > 0 and cost[i - 1][j] + _DEL_COST < best:
+                best, best_op = cost[i - 1][j] + _DEL_COST, (1, 0, "del")
+            if j > 0 and cost[i][j - 1] + _INS_COST < best:
+                best, best_op = cost[i][j - 1] + _INS_COST, (0, 1, "ins")
+            cost[i][j] = best
+            back[i][j] = best_op
+
+    gops, ops = [None] * N, [None] * N
+    i, j = N, K
+    while i > 0 or j > 0:
+        di, dj, op = back[i][j]
+        if op == "del":
+            gops[i - 1], ops[i - 1] = None, "del"
+        elif op == "ins":
+            pass
+        elif op in ("match", "sub"):
+            gops[i - 1], ops[i - 1] = espeak_gops[j - 1], op
+        elif op in ("merge2", "merge3"):
+            g = espeak_gops[j - 1]
+            for k in range(i - di, i):
+                gops[k], ops[k] = g, op
+        i, j = i - di, j - dj
+    return gops, ops
