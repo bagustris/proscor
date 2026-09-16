@@ -23,6 +23,13 @@
   <input id="customText" type="text" placeholder="Type a word or phrase to practice" style="font-size: 1rem; padding: 0.4rem; width: 60%;">
   <button id="customBtn">Practice this</button>
 </div>
+<div style="margin-bottom: 1rem;">
+  <label for="engineSelect">Scoring: </label>
+  <select id="engineSelect" style="font-size: 1rem; padding: 0.3rem;">
+    <option value="intelligibility">Intelligibility (did ASR understand the word?)</option>
+    <option value="gop-lite">GOP-lite (pronunciation-fit proxy)</option>
+  </select>
+</div>
 <div id="prompt">Loading prompt&hellip;</div>
 <button id="playBtn">Play reference</button>
 <button id="recordBtn">Record</button>
@@ -56,6 +63,7 @@ const wordsTable = document.getElementById("wordsTable");
 const wordsBody = wordsTable.querySelector("tbody");
 const customText = document.getElementById("customText");
 const customBtn = document.getElementById("customBtn");
+const engineSelect = document.getElementById("engineSelect");
 
 function resetForPrompt() {
   promptEl.textContent = currentPrompt.text;
@@ -185,6 +193,7 @@ async function submitRecording(wavBlob) {
   const formData = new FormData();
   formData.append("audio", wavBlob, "recording.wav");
   formData.append("target_text", currentPrompt.text);
+  formData.append("engine", engineSelect.value);
 
   recordBtn.textContent = "Scoring...";
   const res = await fetch("/api/score", { method: "POST", body: formData });
@@ -205,7 +214,14 @@ function renderReport(report) {
     targetTd.textContent = w.target;
 
     const recognizedTd = document.createElement("td");
-    recognizedTd.textContent = w.recognized || "(nothing)";
+    if (!w.correct && w.recognized === w.target) {
+      // Force-alignment engines (GOP-lite) align *to* the target rather than
+      // free-decoding, so a low score here means a poor fit, not a
+      // different recognized word -- mirrors proscor.feedback's LOW line.
+      recognizedTd.textContent = `(fit ${Math.round(w.word_score)}/100)`;
+    } else {
+      recognizedTd.textContent = w.recognized || "(nothing)";
+    }
 
     const scoreTd = document.createElement("td");
     scoreTd.textContent = Math.round(w.word_score);

@@ -26,13 +26,14 @@ def api_reference(text: str):
 
 
 @app.post("/api/score")
-async def api_score(audio_file: UploadFile = File(..., alias="audio"), target_text: str = Form(...)):
+async def api_score(audio_file: UploadFile = File(..., alias="audio"), target_text: str = Form(...),
+                    engine: str = Form("intelligibility")):
     with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
         tmp.write(await audio_file.read())
         tmp.flush()
         samples, sr = audio.load_wav(tmp.name)
 
-    report = scorer.score_audio(target_text, samples, sr=sr)
+    report = scorer.score_audio(target_text, samples, sr=sr, engine=engine)
     report["feedback"] = feedback.format_report(report)
     return report
 

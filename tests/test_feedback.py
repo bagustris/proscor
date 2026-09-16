@@ -31,6 +31,24 @@ def test_format_report_miss_shows_substitution_hint():
     assert "TH -> T" in out
 
 
+def test_format_report_low_fit_does_not_claim_something_else_was_heard():
+    """GOP-lite (proscor.score.score_gop_lite) force-aligns to the target, so
+    recognized == target even when the fit is poor -- format_report must not
+    render that as a MISS/"heard X instead" line."""
+    report = {
+        "score": 41.0,
+        "words": [
+            {"target": "see", "recognized": "see", "correct": False, "word_score": 41.0,
+             "phonemes_expected": ["S", "IY"], "phonemes_heard": ["S", "IY"], "edits": []},
+        ],
+        "notes": "1 of 1 words below threshold (gop-lite)",
+    }
+    out = format_report(report)
+    assert "LOW  see" in out
+    assert "fit 41/100" in out
+    assert "heard" not in out.lower()
+
+
 def test_phoneme_hint():
     assert "think" in phoneme_hint("TH")
     assert phoneme_hint("ZZZ") == "ZZZ"

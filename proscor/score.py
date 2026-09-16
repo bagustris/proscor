@@ -7,7 +7,7 @@ import re
 
 from rapidfuzz.distance import Levenshtein
 
-from proscor.config import CONF_WEIGHT, PHONEME_WEIGHT
+from proscor.config import CONF_WEIGHT, GOP_LITE_CORRECT_THRESHOLD, PHONEME_WEIGHT
 from proscor.g2p import expected_phonemes
 
 
@@ -124,21 +124,86 @@ def score(target_text: str, asr_result: dict, include_stress: bool = False, has_
     return {"score": overall, "words": words_report, "notes": notes}
 
 
-def score_audio(target_text: str, samples, sr: int = 16000,
-                include_stress: bool = False, model_dir: str = None) -> dict:
+def score_gop_lite(target_text: str, samples, sr: int = 16000,
+                    include_stress: bool = False, model_dir: str = None) -> dict:
+    """GOP-lite ScoreReport (PLAN.md section 5a): force-align `target_text`'s
+    words against `samples` (proscor.align.align_words_gop, sentence-level
+    CTC Viterbi alignment) and map each word's GOP to 0-100 via
+    align.gop_to_fit. Word-level BPE-subword proxy for Goodness-of-
+    Pronunciation — not the exact-match "did ASR understand this word"
+    signal the default `score()` intelligibility engine uses. Validated
+    against speechocean762 (scripts/eval_so762.py): word-level Pearson r =
+    0.47 vs. human per-word accuracy on the full test split."""
+    from proscor import align
+
+    target_words = target_text.split()
+    results = align.align_words_gop(samples, [_clean(w) for w in target_words],
+                                     sr=sr, model_dir=model_dir)
+
+    words_report = []
+    for target_word, r in zip(target_words, results):
+        expected_ph = expected_phonemes(target_word, include_stress)
+        expected_ph = expected_ph[0] if expected_ph else []
+        if r is None:
+            words_report.append({
+                "target": target_word, "recognized": None, "correct": False,
+                "word_score": 0.0, "phonemes_expected": expected_ph,
+                "phonemes_heard": [], "edits": [],
+            })
+            continue
+        w_score = 100.0 * align.gop_to_fit(r["gop"])
+        correct = w_score >= GOP_LITE_CORRECT_THRESHOLD
+        # Force-aligned to the target, not free-decoded, so "recognized" is
+        # always the target word itself -- a low score means a poor *fit*
+        # (which feedback.format_report renders as a fit line, not a
+        # "heard X instead" substitution), never that nothing was heard.
+        words_report.append({
+            "target": target_word,
+            "recognized": target_word,
+            "correct": correct,
+            "word_score": round(w_score, 1),
+            "phonemes_expected": expected_ph,
+            "phonemes_heard": expected_ph,
+            "edits": [],
+        })
+
+    overall = round(sum(w["word_score"] for w in words_report) / len(words_report), 1) if words_report else 0.0
+    mispronounced = sum(1 for w in words_report if not w["correct"])
+    notes = ("all words correct (gop-lite)" if mispronounced == 0 else
+              f"{mispronounced} of {len(words_report)} words below threshold (gop-lite)")
+    return {"score": overall, "words": words_report, "notes": notes}
+
+
+def score_audio(target_text: str, samples, sr: int = 16000, include_stress: bool = False,
+                model_dir: str = None, engine: str = "intelligibility") -> dict:
     """Score a recording against `target_text` -> ScoreReport.
 
-    Single-word targets use CTC forced alignment (proscor/align.py) — free
-    decoding of isolated short words is unreliable, see that module — and fall
-    back to the transcribe path if the alignment extras aren't installed.
-    Multi-word targets use the ASR transcribe + intelligibility path."""
-    words = target_text.split()
-    if len(words) == 1:
+    `engine="intelligibility"` (default): single-word targets use CTC forced
+    alignment (proscor/align.py) — free decoding of isolated short words is
+    unreliable, see that module — falling back to the transcribe path if the
+    alignment extras aren't installed; multi-word targets use the ASR
+    transcribe + intelligibility path (`score()`).
+
+    `engine="gop-lite"`: all targets use `score_gop_lite` (PLAN.md section
+    5a), falling back to the intelligibility path if the alignment extras
+    aren't installed."""
+    if engine == "gop-lite":
         from proscor import align
 
         if align.available():
-            return align.score_word(samples, words[0], sr=sr,
-                                    include_stress=include_stress, model_dir=model_dir)
+            return score_gop_lite(target_text, samples, sr=sr,
+                                   include_stress=include_stress, model_dir=model_dir)
+    elif engine != "intelligibility":
+        raise ValueError(f"unknown engine {engine!r}, expected 'intelligibility' or 'gop-lite'")
+    else:
+        words = target_text.split()
+        if len(words) == 1:
+            from proscor import align
+
+            if align.available():
+                return align.score_word(samples, words[0], sr=sr,
+                                        include_stress=include_stress, model_dir=model_dir)
+
     from proscor.asr import transcribe
 
     return score(target_text, transcribe(samples, sr=sr, model_dir=model_dir),

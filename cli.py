@@ -16,13 +16,17 @@ def parse_args():
     p.add_argument("--model-dir", default=None, help="override ASR model dir")
     p.add_argument("--tts-lang", default=TTS_LANG, help="reference voice language")
     p.add_argument("--no-tts", action="store_true", help="disable reference playback")
+    p.add_argument("--engine", default="intelligibility", choices=["intelligibility", "gop-lite"],
+                   help="scoring engine: 'intelligibility' (default, did ASR understand the "
+                        "word?) or 'gop-lite' (Goodness-of-Pronunciation proxy, PLAN.md section 5a)")
     return p.parse_args()
 
 
-def _score_and_report(target_text: str, seconds: float, include_stress: bool, model_dir: str):
+def _score_and_report(target_text: str, seconds: float, include_stress: bool, model_dir: str, engine: str):
     print(f"[recording {seconds:.0f}s...]")
     samples = audio.record(seconds)
-    report = scorer.score_audio(target_text, samples, include_stress=include_stress, model_dir=model_dir)
+    report = scorer.score_audio(target_text, samples, include_stress=include_stress,
+                                 model_dir=model_dir, engine=engine)
     print(fb.format_report(report))
     return samples
 
@@ -77,7 +81,8 @@ def main():
 
             _play_reference_loop(prompt, args)
 
-            last_recording = _score_and_report(prompt["text"], args.seconds, args.include_stress, args.model_dir)
+            last_recording = _score_and_report(prompt["text"], args.seconds, args.include_stress,
+                                                args.model_dir, args.engine)
 
             action = _action_loop(last_recording)
 

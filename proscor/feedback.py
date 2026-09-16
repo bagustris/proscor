@@ -35,6 +35,15 @@ def _word_line(w: dict) -> str:
     if w["correct"]:
         return f"  OK   {w['target']:<10} [{expected}]"
 
+    if w["recognized"] == w["target"]:
+        # Force-alignment engines (GOP-lite: proscor.score.score_gop_lite)
+        # align *to* the target rather than free-decoding, so a low score
+        # here means a poor fit to the target, not a different recognized
+        # word -- "heard X instead" would be misleading (recognized ==
+        # target only reaches this branch when not correct, which the
+        # intelligibility/single-word engines never produce).
+        return f"  LOW  {w['target']:<10} [{expected}]  fit {round(w['word_score'])}/100"
+
     heard_word = w["recognized"] if w["recognized"] else "(nothing)"
     heard = " ".join(w["phonemes_heard"])
     line = f'  MISS {w["target"]:<10} -> heard "{heard_word}"  [expect {expected} | heard {heard}]'
