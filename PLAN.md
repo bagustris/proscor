@@ -786,6 +786,109 @@ above are from the re-run after the fix, with zero failures. This bug was
 latent in the shipped `--engine gop-lite` path too (`proscor.align`, not
 just the phone-model eval), not just the eval scripts.
 
+### 5c. Disentangling age/domain-match from L1-specific error profile: L2-ARCTIC
+
+Section 5b found the BPE-vs-phone-model ranking flips between speechocean762
+(Mandarin-L1 children, BPE wins) and UME-ERJ (Japanese-L1 adults, phone
+wins), with two candidate explanations that two corpora can't separate:
+acoustic/age domain match, or an L1-specific phoneme-substitution profile a
+phone model is structurally better positioned to catch. **The test:**
+[L2-ARCTIC](https://psi.engr.tamu.edu/l2-arctic-corpus/) has **adult
+Mandarin-L1** speakers — same L1 as speechocean762, same age category as
+UME-ERJ — so if adult-Mandarin behaves like child-Mandarin (BPE wins), L1
+dominates; if it behaves like adult-Japanese (phone wins), age/domain
+dominates.
+
+**Data:** the [KoelLabs/L2Arctic](https://huggingface.co/datasets/KoelLabs/L2Arctic)
+HF mirror (gated, requires an approved token) rather than the original
+TAMU/Kaggle distribution — a clean parquet of the "scripted" split (3,599
+utterances, all 24 speakers, all 6 L1s, audio pre-converted to 16kHz
+float32). Trade-off: this mirror gives two **unaligned** IPA strings per
+utterance (`g2p` = canonical, `ipa` = expert-verified perceived), not the
+original per-phone-aligned canonical/perceived/error-tag triples the raw
+TextGrid annotations have (which `proscor.align_phone.reconcile_phones`-style
+machinery could exploit for a real phone-level number — see "Not done"
+below). `scripts/eval_l2arctic.py` uses a coarser proxy instead: normalized
+character-level Levenshtein distance between `g2p` and `ipa` as an
+utterance-level pronunciation-error signal (expected to correlate
+*negatively* with GOP — higher edit distance should mean worse
+pronunciation).
+
+**Ground-truth signal differs across all three corpora — magnitudes below
+are not comparable to 5a/5b without accounting for this:**
+
+| corpus | unit | signal | BPE PCC | phone PCC |
+|---|---|---|---|---|
+| speechocean762 (5a) | word | expert 0-10 score | 0.471 | 0.325 (0.433 reconciled, phone-level) |
+| UME-ERJ (5b) | sentence/word | expert 1-5 mean (5 raters) | 0.29-0.33 | **0.43** |
+| L2-ARCTIC, Chinese (5c) | sentence | char-level CER proxy | -0.107 | -0.119 |
+
+**Result: a near-tie, not a replication of either prior pattern.**
+speechocean762 (n=15,967 words): |BPE| clearly beats |phone| (0.471 vs.
+0.325). UME-ERJ (n=1,900-3,784): |phone| clearly beats |BPE| (0.43 vs.
+0.29-0.33, a ~1.3-1.5x margin). L2-ARCTIC Chinese (n=600): |phone| =
+0.119 vs. |BPE| = 0.107 — a difference within noise at this n, not a clear
+win either way. **Per-speaker breakdown** (4 speakers, 150 utterances each,
+`results/l2arctic_chinese_summary.json`) confirms this isn't an artifact of
+averaging out a real effect: BWC (BPE -0.062, phone -0.186, phone clearly
+stronger), TXHC (BPE -0.057, phone -0.106, phone stronger), NCC (BPE
+-0.160, phone -0.100, BPE stronger), LXC (BPE -0.090, phone +0.014, phone
+*wrong-signed*, effectively zero). Four speakers, three different
+winners-or-ties.
+
+**Read the "before caveats" framing first, not last: the correlations here
+(|r| ≈ 0.02-0.29 across all six L1s, `results/l2arctic_summary.json`) are
+2-3x weaker across the board than either speechocean762 or UME-ERJ.**
+Before attributing the Chinese tie to a real phenomenon, the char-level CER
+proxy has to be trusted to resolve a difference this size, and the
+all-language table below suggests it can't always be trusted to do even
+that: Korean shows BPE at **+0.131** (wrong sign, n=600) — either a genuine
+anomaly in that subpopulation or the proxy breaking down; there's no way to
+tell which from this data. Two known weaknesses in the proxy, checked but
+not fully resolved: (a) `ipa` carries stress marks (`ˈ`/`ˌ`) that `g2p`
+never has (mean 8.0 stress marks/utterance vs. 0), inflating raw CER by
+~1.8x (0.336 mean raw vs. 0.189 stripped) — checked whether this
+contaminates the *ranking* rather than just the scale: `corr(raw CER,
+n_words) = -0.015` and `corr(stripped CER, n_words) = -0.031` (both
+negligible), and raw vs. stripped CER correlate at 0.915, so the length
+confound doesn't appear to be driving the result, but this wasn't
+re-verified against GOP directly with the stripped variant; (b) `g2p`/`ipa`
+have no word-boundary markers, so a character-level edit at a word boundary
+can "substitute" a stress mark for a neighboring word's phone — a
+structural limitation of this proxy, not fixed here.
+
+**All 6 L1s** (secondary, same weak-signal caveat applies to all of them):
+Vietnamese shows the strongest signal for both engines (BPE -0.268, phone
+-0.289); Arabic and Hindi are weak/mixed for both (|r| < 0.08); pooled
+across all languages phone slightly trails BPE (-0.186 vs. -0.204) — the
+opposite of the per-language Chinese lean, another sign of noise rather
+than a stable pattern.
+
+**Bottom line:** this test rules out *"L1 alone explains the ranking
+flip"* — adult Mandarin-L1 speech does not reproduce speechocean762's
+clear BPE-wins pattern, so L1 identity by itself isn't sufficient. It does
+**not** confirm *"age/domain-match alone explains it"* either — the
+phone model's edge here (0.119 vs. 0.107) is far short of UME-ERJ's
+1.3-1.5x margin, and per-speaker results don't even agree on which model
+wins. The honest conclusion is that this corpus, with this proxy, cannot
+resolve the question at the effect size it would take — not that the
+question is resolved in either hypothesis's favor.
+
+**Not done — the sharper follow-up:** the original TAMU/Kaggle L2-ARCTIC
+distribution's raw TextGrid annotations give expert-aligned
+canonical-phone/perceived-phone/error-tag triples per phone (substitution/
+deletion/addition, ARPABET) — exactly the granularity `phones-accuracy`
+gives on speechocean762, and exactly what `reconcile_phones`-style
+alignment machinery was built to exploit. 260+ of the ~1,200 files needed
+for the 4 Mandarin speakers (`annotation/` + matching `wav/`, 150
+manually-annotated utterances each) are already downloaded under
+`/data/L2-ARCTIC/mandarin/` (fetched via the Kaggle API per-file, since
+whole-dataset downloads hit Google Drive/Kaggle-side rate limits on this
+corpus — resuming needs ~20 more minutes). Finishing that download and
+computing a true phone-level PCC for adult Mandarin-L1, comparable to
+speechocean762's 0.425-0.433, would be a far sharper test than the
+utterance-level CER proxy above. Scoped, not built.
+
 ---
 
 ## 6. CLI commands summary  (completing the empty section from the old plan)

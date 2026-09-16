@@ -71,6 +71,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explanations (acoustic/age domain match vs. L1-specific error profile).
   Rhythm/intonation/stress correlate weakly for both engines, as expected —
   GOP measures phone/word identity fit, not prosody.
+- **Disentangling age vs. L1 (`scripts/eval_l2arctic.py`, PLAN.md section
+  5c):** validates against L2-ARCTIC's adult Mandarin-L1 speakers (same L1
+  as speechocean762, same age category as UME-ERJ) to test which variable
+  drove the section 5b ranking flip. Result: a near-tie (BPE -0.107, phone
+  -0.119, n=600; per-speaker breakdown shows 3 different winners across 4
+  speakers) that rules out "L1 alone" but doesn't confirm "age alone" —
+  correlations here are 2-3x weaker than the other two corpora (a coarser
+  proxy signal: character-edit-distance between canonical/perceived IPA,
+  not an expert score), so the honest conclusion is the test is
+  underpowered at this effect size, not that the question is resolved. A
+  sharper phone-level follow-up (using the original TAMU/Kaggle
+  distribution's per-phone TextGrid annotations) is scoped but not built.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
