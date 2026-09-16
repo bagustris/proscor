@@ -7,6 +7,23 @@ import pytest
 from proscor import align_phone
 
 
+def test_phonemize_word_is_case_insensitive():
+    """Regression test for a real bug: espeak-ng's en-us phonemization
+    spells out an all-caps word letter-by-letter when it also reads as a
+    plausible acronym ("IT" -> "I-T", "US" -> "U-S"), instead of pronouncing
+    it -- speechocean762's transcripts are all-caps, so this silently
+    corrupted the target phones for every occurrence of "IT"/"US" (2.14% of
+    test-split word occurrences) until _phonemize_word started lowercasing.
+    Requires the real phonemizer/espeak-ng (not stubbed, unlike the other
+    tests here) -- skipped if unavailable."""
+    if not align_phone.available():
+        pytest.skip("phonemizer/espeak-ng not installed")
+    align_phone._phonemize_word.cache_clear()
+    assert align_phone._phonemize_word("IT") == align_phone._phonemize_word("it")
+    assert align_phone._phonemize_word("US") == align_phone._phonemize_word("us")
+    assert align_phone._phonemize_word("IT") == ("ɪ", "t")
+
+
 def test_word_phones_and_ids_filters_unknown_phones_together(monkeypatch):
     """A phone espeak emits that isn't in this model's vocab must be dropped
     from *both* the phone-text list and the id list, in lockstep -- an

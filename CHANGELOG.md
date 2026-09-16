@@ -45,14 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model (`wav2vec2-lv-60-espeak-cv-ft`, espeak-ng IPA output), with targets
   phonemized live via `phonemizer`/espeak-ng rather than a hand-built
   ARPABET→IPA table. `scripts/eval_so762_phone.py`: full `test` split
-  phone-level Pearson r = 0.43 (92.5% coverage vs. the dataset's own phone
-  segmentation) — 95-97% of the classic trained RF/SVR baselines' PCC,
-  zero-shot. Word/utterance-level PCC (0.30 / 0.52 / 0.56) trail the
+  phone-level Pearson r = 0.425 (94.6% coverage vs. the dataset's own phone
+  segmentation) — ~95% of the classic trained RF/SVR baselines' PCC,
+  zero-shot; confirmed (not lower) on the untouched `train` split
+  (r = 0.476). Word/utterance-level PCC (0.325 / 0.536 / 0.572) trail the
   simpler BPE model, so the BPE model stays the shipped `--engine gop-lite`
-  default; see `PLAN.md` section 5a item 4 for the full comparison and the
+  default; see `PLAN.md` section 5a item 4 for the full comparison, the
   root-caused aggregation bug fix along the way (word GOP as mean of
-  per-phone GOP, not mean over the whole frame span including blanks).
-  New `requirements-eval.txt` entry: `phonemizer` (needs system espeak-ng).
+  per-phone GOP, not mean over the whole frame span including blanks), and
+  the scoped-but-not-yet-built DTW reconciliation for the uncovered 7.4% of
+  phones. New `requirements-eval.txt` entry: `phonemizer` (needs system
+  espeak-ng).
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
@@ -61,6 +64,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Broke reference-audio playback everywhere it's used: the CLI's `p`lay
   command, the web app's `/api/reference` endpoint, and
   `scripts/selftest.py`. Dropped the two removed fields.
+- `proscor/align_phone.py`: `_phonemize_word` fed words to espeak-ng in
+  their original case; speechocean762's all-caps transcripts triggered
+  espeak's acronym heuristic on two words ("IT" -> spelled out "I-T", "US"
+  -> "U-S", instead of pronounced), corrupting their target phones for
+  2.14% of test-split word occurrences. Now lowercases before phonemizing;
+  regression test in `tests/test_align_phone.py`. Full re-evaluation after
+  the fix: every phone-level GOP-lite number rose slightly (see the
+  `scripts/eval_so762_phone.py` entry above).
 
 ## [1.0.1] - 2026-07-14
 

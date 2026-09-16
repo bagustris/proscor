@@ -77,10 +77,18 @@ def _logprobs(samples: np.ndarray, use_int8: bool = True) -> np.ndarray:
 
 @lru_cache(maxsize=4096)
 def _phonemize_word(word: str) -> tuple:
+    """espeak-ng's en-us phonemization is case-sensitive in a way that has
+    nothing to do with pronunciation: an all-caps word that also reads as a
+    plausible acronym gets spelled out letter-by-letter instead of
+    pronounced ("IT" -> "aɪ t iː" = "I-T", vs. "it" -> "ɪ t"; "US" -> "j uː
+    ɛ s" = "U-S", vs. "us" -> "ʌ s"). speechocean762's transcripts are all
+    caps, so words are lowercased before phonemizing to avoid this -- caught
+    by comparing every unique word in the test split against its lowercase
+    form (2/1869 differed, 2.14% of word occurrences: "IT" and "US")."""
     from phonemizer import phonemize
     from phonemizer.separator import Separator
 
-    out = phonemize([word], language="en-us", backend="espeak", strip=True,
+    out = phonemize([word.lower()], language="en-us", backend="espeak", strip=True,
                      separator=Separator(phone=" ", word=""),
                      preserve_punctuation=False, with_stress=False)[0]
     return tuple(out.split())

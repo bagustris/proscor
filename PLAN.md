@@ -498,25 +498,27 @@ changed the plan to a staged rollout:
    sequence, not BPE-specific) for the forced alignment itself.
 
    **Result (full `test` split, 2500 utterances, 15,967 words, int8,
-   ~16 min CPU — `scripts/eval_so762_phone.py`, `results/so762_test_phone_int8_summary.json`):**
+   ~7-16 min CPU — `scripts/eval_so762_phone.py`, `results/so762_test_phone_int8_summary.json`;
+   confirmed on the untouched `train` split, `results/so762_train_phone_int8_summary.json`,
+   see "Train-split confirmation" below):**
 
-   | metric | this (zero-shot) | literature (trained) |
+   | metric | this (zero-shot, test split) | literature (trained) |
    |---|---|---|
-   | phone-level PCC (matched-length words only, n=43,204/47,369 phones, 91.2% coverage) | **0.426** | GOPT-LibriSpeech 0.612; classic RF/SVR baselines (phone-only, no word/utt numbers exist for them; computed on all 47,369 phones) 0.440/0.450 |
-   | word-accuracy PCC | 0.302 | GOPT-LibriSpeech 0.533 |
-   | utterance-accuracy PCC | 0.523 | GOPT-LibriSpeech 0.714 |
-   | utterance-total PCC | 0.560 | GOPT-LibriSpeech 0.742 |
+   | phone-level PCC (matched-length words only, n=43,888/47,369 phones, 94.6% coverage) | **0.425** | GOPT-LibriSpeech 0.612; classic RF/SVR baselines (phone-only, no word/utt numbers exist for them; computed on all 47,369 phones) 0.440/0.450 |
+   | word-accuracy PCC | 0.325 | GOPT-LibriSpeech 0.533 |
+   | utterance-accuracy PCC | 0.536 | GOPT-LibriSpeech 0.714 |
+   | utterance-total PCC | 0.572 | GOPT-LibriSpeech 0.742 |
 
    (GOPT numbers are Table 1 of [Gong et al., ICASSP 2022, arXiv:2205.03432](https://arxiv.org/abs/2205.03432),
    mean over 5 seeds, LibriSpeech-acoustic-model variant — the closest
    published setup to a general, non-domain-specific ASR model. RF/SVR are
    the original speechocean762 paper's baselines, phone-level only.)
 
-   The phone-level number (0.426, on the 91.2% of phones with a matching
+   The phone-level number (0.425, on the 94.6% of phones with a matching
    count against the dataset's own segmentation — see the coverage-bias
    note below) is the literature-comparable headline metric this section
    originally wanted, and it lands close to the classic *trained* RF/SVR
-   baselines (94.7-96.8% of them, though those were computed on 100% of
+   baselines (94.4-96.6% of them, though those were computed on 100% of
    phones) with **zero training** — a legitimate systems-paper result. The
    unexpected finding: **this phone
    model's word/utterance-level PCC is lower than the simpler BPE model's**
@@ -557,12 +559,53 @@ changed the plan to a staged rollout:
    resolved first (e.g. a learned or tuned per-phone weighting instead of a
    flat mean).
 
-   **Coverage-bias note:** the excluded 8.8% of phones (where the espeak
-   phone count for a word didn't match the dataset's ARPABET segmentation)
-   are not a random sample — they're disproportionately words with
-   vowel+R sequences that espeak merges into one rhotic token ("mark",
-   "four"; see the R-merging discussion above), so the 0.426 figure is
-   *approximate with an unknown bias direction*, not a lower or upper bound.
+   **Bug found and fixed: espeak-ng phonemization is case-sensitive in a way
+   unrelated to pronunciation.** speechocean762's transcripts are all-caps;
+   feeding `"IT"`/`"US"` to `phonemizer` got them spelled out letter-by-letter
+   ("I-T", "U-S" — espeak's acronym heuristic), not pronounced, corrupting
+   the target phones for those words. Checked systematically: 2 of 1,869
+   unique test-split words differed between upper- and lower-case
+   phonemization, covering 2.14% of word occurrences. `_phonemize_word` now
+   lowercases before calling espeak (with a regression test in
+   `tests/test_align_phone.py`, skipped when espeak-ng isn't installed). Full
+   re-run after the fix: every number in the table above rose slightly
+   (word-level PCC 0.302→0.325, phone coverage 91.2%→94.6%) — the fix
+   helped, as expected, and the effect size matches the bug's small blast
+   radius. The all-caps text is also fed unmodified to `align.py`'s BPE path
+   (`eval_so762.py`) and `g2p_en`/CMUdict (case-insensitive lookups), neither
+   of which showed any analogous sensitivity — this was specific to
+   `phonemizer`'s espeak-ng backend.
+
+   **Coverage-bias note:** the excluded phones (where the espeak phone count
+   for a word didn't match the dataset's ARPABET segmentation) are not a
+   random sample — and note the two rates differ: **5.41%** of *words*
+   mismatch (864/15,967), but that's **7.35%** of *phones* (3,481/47,369),
+   since mismatched words run longer on average (multi-syllable words are
+   likelier to contain a merge-prone vowel+R or diphthong cluster). A
+   systematic breakdown (test split, post-fix) found three distinct
+   many-to-one merge patterns, not just the one R-merging case originally
+   noticed: (a)
+   **rhotic-vowel merge** (~60% of mismatches) — espeak fuses vowel+R into
+   one token ("mark" → `m ɑːɹ k`, "four" → `f oːɹ`); (b) **syllabic-L merge**
+   (part of the "other" category) — espeak has a dedicated `əl` vocab token
+   for a syllabic L that ARPABET spells as two phones, `AH0 L`
+   ("difficult" → `...k əl t`); (c) **diphthong-cluster merge** — espeak
+   treats some vowel sequences as one complex-nucleus token (`iə`, `aɪə`,
+   `aɪɚ`) where ARPABET keeps two vowel symbols ("idea" → mine `d iə`,
+   dataset `D IH AH1`). A fourth, *not* an alignment problem: **genuine
+   dialectal disagreement** — espeak's en-us applies yod-dropping ("new" →
+   `n uː`, no `j`) where CMUdict's canonical entry keeps the historical
+   glide (`N Y UW0`); no realignment recovers a phone the model was never
+   asked to produce. (a)-(c) are well-defined many-to-one correspondences a
+   constrained monotonic alignment (Needleman-Wunsch-style, allowing 2-ARPABET-phone
+   ↔ 1-espeak-phone merges for these three known patterns, plus an
+   ARPABET/IPA equivalence-class table — the same one an earlier abandoned
+   static-mapping attempt produced, repurposed here as a *matching*
+   heuristic instead of a *target-generation* one — for scoring 1:1 matches)
+   should reconcile, raising phone-level coverage from 94.6% toward
+   ~98-99%; (d) would remain a small, principled exclusion. Not yet
+   implemented — this is the scoped design for that follow-up, not a
+   completed one.
 
    **Precision:** fp32 was not run at full scale for this model (it's 4x
    larger than the BPE model; a full run was judged not worth the added
@@ -570,16 +613,25 @@ changed the plan to a staged rollout:
    within ~0.03 PCC on the matched-phone comparison, consistent with the BPE
    model's full-scale finding (item 3) that precision barely matters here.
 
-   **Test-set peeking:** the switch from span-based to phone-mean word-GOP
-   aggregation (PCC 0.03 -> 0.22) and the competitor-set contamination
-   check were both diagnosed on `test`-split subsamples — standard practice
-   for debugging, but it means the `test`-split numbers above aren't purely
-   held-out for the aggregation *choice* (the diagnostic changed nothing,
-   just confirmed the null result). The `train` split (2,500 more
-   utterances) has not been touched by any decision in this section;
-   running `scripts/eval_so762_phone.py --split train` (~16 min) to confirm
-   0.30/0.43 hold there is the natural next check before this goes in a
-   paper.
+   **Train-split confirmation:** the switch from span-based to phone-mean
+   word-GOP aggregation (PCC 0.03 -> 0.22) and the competitor-set
+   contamination check were the two decisions actually shaped by looking at
+   `test`-split behavior — standard practice for debugging, but it meant the
+   `test`-split numbers weren't purely held-out for the aggregation
+   *choice* (the diagnostic itself changed nothing, just confirmed a null
+   result). `train` was never inspected for either of those. The
+   case-sensitivity bug fix above was also *diagnosed* on `test` (that's
+   where the mismatch investigation happened), but it is a correctness fix
+   applied uniformly to the phonemization code, not a parameter tuned to
+   the data — it changes "IT" to phonemize correctly regardless of which
+   split contains it, so it doesn't reopen the held-out question the same
+   way a data-driven choice would. Running `scripts/eval_so762_phone.py
+   --split train` (2,500 further utterances) confirms the two
+   test-inspected decisions above generalize — if anything, the numbers are
+   slightly higher: word-level PCC 0.383, utterance-accuracy PCC 0.590,
+   utterance-total PCC 0.594, phone-level (matched) PCC 0.476 at
+   94.8% coverage (`results/so762_train_phone_int8_summary.json`). No sign
+   of overfitting to test-set inspection.
 5. **Wired into the app:** `proscor.score.score_gop_lite` force-aligns a
    multi-word target (`align.align_words_gop`) and maps each word's GOP to
    0-100 via the shared `align.gop_to_fit` transform (factored out of
