@@ -688,6 +688,104 @@ changed the plan to a staged rollout:
    requests to `POST /api/score` for both engines, not just at the
    Python-call level.
 
+### 5b. Second-corpus generalization: UME-ERJ
+
+Everything in 5a was validated on one corpus (speechocean762: Mandarin-L1
+children). [UME-ERJ](https://research.nii.ac.jp/src/en/UME-ERJ.html) (NII
+Speech Resources Consortium) is a second corpus with a different L1
+(Japanese) and, plausibly, a different age range — it's recorded at Japanese
+universities (Tohoku, Kyoto, Toyohashi Tech, Tokyo, Tokyo Tech, Iwate,
+Waseda, Ritsumeikan, Ryukoku — `workgroup.txt`) and literally named "English
+Speech Database Read by Japanese **Students**." Unlike speechocean762
+(which has an explicit per-speaker `age` field), no document found in this
+corpus states speaker ages numerically, so "adult university students" here
+is an inference from the recording-site/corpus-name evidence, not a
+verified field — worth being precise about, since the inference does load-
+bearing work in the discussion below.
+
+**Access & format:** ships as a local directory tree (Shift-JIS-encoded
+metadata, CRLF line endings, `S#_###.wav`/`W#_###.wav` recording filenames
+under `wav/JE/<SITE>/<GEN><SPK>/`), not a downloadable HF/parquet mirror
+like speechocean762 — `scripts/eval_umeerj.py --data-root <path>` (default
+`/data/UME-ERJ`). **Crucially, it has no per-phone accuracy labels**:
+ratings are holistic 1-5 scores from up to 5 native-English-teacher raters
+(averaged here per item; individual rater identity isn't needed for a
+correlation against the mean), per **sentence** (segmental/rhythm/
+intonation) or per **word** (segmental/accent). So this validates
+word/utterance-level GOP-lite only — it cannot extend the phone-level
+reconciled-PCC number from item 4, which needs per-phone ground truth that
+doesn't exist here.
+
+**Result** (both engines at their int8 defaults, `scripts/eval_umeerj.py`,
+`results/umeerj_summary.json`; zero failures across all 9,484 rated items —
+0 missing text, 0 missing audio, 0 scoring exceptions for either engine):
+
+| category | unit | n (rated recordings) | BPE-model PCC | phone-model PCC |
+|---|---|---|---|---|
+| segmental | sentence | 1,900 | 0.328 | **0.432** |
+| segmental | word | 3,784 | 0.294 | **0.428** |
+| rhythm | sentence | 950 | 0.055 | 0.156 |
+| intonation | sentence | 950 | 0.056 | 0.039 |
+| accent (stress) | word | 1,900 | 0.110 | 0.106 |
+
+**Generalization holds:** the segmental correlations (0.29-0.43) land in
+the same band as speechocean762's word/utterance numbers (0.33-0.59, item
+3-4) on a corpus with a different L1 and recording protocol — that's what
+"generalizes" should look like, not a coincidence of one dataset's
+particulars.
+
+**The ranking flips, and that's the most interesting result in this
+section:** on speechocean762, the BPE model beat the phone model at
+word-level (item 3 vs. item 4: word PCC 0.471 vs. 0.325) and
+utterance-level (0.556/0.589 vs. 0.536/0.572). On UME-ERJ, the **phone
+model wins clearly** at both word- and sentence-segmental (0.43 vs.
+0.29-0.33). Two candidate explanations, **not separable with only two
+corpora**:
+1. **Domain/acoustic match.** The phoneme-CTC model is trained on adult
+   multilingual CommonVoice speech. If UME-ERJ's speakers are adult
+   university students (the inferred-not-verified claim above) and
+   speechocean762's are documented children (ages 5-15), the phone model's
+   training distribution is simply closer to UME-ERJ's speakers acoustically.
+2. **L1-specific error profile.** Japanese-accented English has a
+   well-documented, specific phoneme-substitution profile (/l/~/r/,
+   /θ/~/s/, vowel epenthesis, /v/~/b/) that a genuine phoneme-level model
+   may be structurally better positioned to catch than a BPE model routing
+   everything through orthography; Mandarin-accented child speech has a
+   different error profile the BPE model might happen to fit better.
+
+Both are plausible, both are consistent with the data, and this pair of
+corpora changes L1 *and* (probably) age/register simultaneously, so neither
+can be isolated here. A third corpus that holds one variable fixed while
+changing the other (e.g. a documented-adult, non-Japanese-L1 corpus, or a
+documented-child Japanese-L1 corpus) would be needed to separate them —
+noted as a natural follow-up, not done.
+
+**Negative controls behave as expected:** rhythm and intonation correlate
+weakly (0.04-0.16) for both engines — GOP is a posterior-deficit measure of
+phone/word *identity* fit, not pitch contour or timing, so it having
+little to say about prosody is the metric measuring what it claims to
+measure, not a failure. Word accent/stress (0.11 both) is similarly weak —
+placement of stress isn't something either engine's GOP formula
+represents. (The phone model's small edge on rhythm, 0.156 vs. 0.055, is
+plausibly its per-phone segmentation carrying a little durational
+information the BPE model's word-span-only granularity doesn't — mentioned
+once, not built on; the two intonation numbers and the two accent numbers
+are statistically indistinguishable from each other and from zero given
+these sample sizes.)
+
+**Bug found and fixed during this run:** `proscor.align._ctc_viterbi`'s
+backtracking loop did `s -= back[t, s]`, mixing a plain Python state-index
+int with a NumPy `int8` array value; under NumPy 2's stricter
+type-promotion rules this raised `OverflowError` once a state index
+exceeded 127 (utterances with more than ~64 tokens). speechocean762's
+shorter utterances never hit this (zero warnings across every full-scale
+run there); UME-ERJ's longer TIMIT-based sentences did (8/1,900 = 0.4% of
+the first, since-superseded sentence-segmental run). Fixed with an explicit
+`int(...)` cast and a regression test (`tests/test_align.py`); the results
+above are from the re-run after the fix, with zero failures. This bug was
+latent in the shipped `--engine gop-lite` path too (`proscor.align`, not
+just the phone-model eval), not just the eval scripts.
+
 ---
 
 ## 6. CLI commands summary  (completing the empty section from the old plan)

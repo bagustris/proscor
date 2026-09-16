@@ -58,6 +58,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   known espeak segmentation patterns, plus principled deletions for
   phones with no espeak counterpart at all, e.g. yod-dropping). New
   `requirements-eval.txt` entry: `phonemizer` (needs system espeak-ng).
+- **Second-corpus generalization: UME-ERJ** (`scripts/eval_umeerj.py`,
+  PLAN.md section 5b): validates both GOP-lite engines against
+  [UME-ERJ](https://research.nii.ac.jp/src/en/UME-ERJ.html) (Japanese-L1
+  English speakers — a different L1 than speechocean762's Mandarin-L1
+  children). No per-phone labels exist in this corpus, so it's a
+  word/utterance-level-only check. Segmental correlations hold in the same
+  band as speechocean762 (BPE 0.29-0.33, phone model 0.43) across 9,484
+  rated items with zero failures — but the word/utterance-level ranking
+  between the two engines **flips** relative to speechocean762 (phone model
+  wins here; BPE model won there), with two plausible, non-separable
+  explanations (acoustic/age domain match vs. L1-specific error profile).
+  Rhythm/intonation/stress correlate weakly for both engines, as expected —
+  GOP measures phone/word identity fit, not prosody.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
@@ -74,6 +87,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regression test in `tests/test_align_phone.py`. Full re-evaluation after
   the fix: every phone-level GOP-lite number rose slightly (see the
   `scripts/eval_so762_phone.py` entry above).
+- `proscor/align.py`: `_ctc_viterbi`'s backtracking loop did
+  `s -= back[t, s]`, mixing a plain Python state-index int with a NumPy
+  `int8` value; under NumPy 2's stricter type-promotion rules this raised
+  `OverflowError: Python integer N out of bounds for int8` once a state
+  index exceeded 127 (utterances with more than ~64 tokens — silent
+  wraparound instead of a crash under NumPy 1.x). speechocean762's shorter
+  utterances never triggered it; UME-ERJ's longer sentences did (0.4% of
+  one category). Affects the shipped `--engine gop-lite` path
+  (`proscor.align`), not just the eval scripts — `proscor.align_phone`
+  reuses the same function. Fixed with an explicit `int(...)` cast;
+  regression test in `tests/test_align.py`.
 
 ## [1.0.1] - 2026-07-14
 
