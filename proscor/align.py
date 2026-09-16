@@ -56,18 +56,21 @@ def _model_dir(model_dir: str = None) -> Path:
     return path if path.is_absolute() else (ROOT / path)
 
 
-def _session(model_dir: str = None):
+def _session(model_dir: str = None, use_int8: bool = None):
     global _SESSION, _SESSION_DIR, _VOCAB
     import onnxruntime as ort
 
+    if use_int8 is None:
+        use_int8 = config.ALIGN_USE_INT8
     mdir = _model_dir(model_dir)
-    if _SESSION is not None and _SESSION_DIR == mdir:
+    key = (mdir, use_int8)
+    if _SESSION is not None and _SESSION_DIR == key:
         return _SESSION
-    onnx = mdir / "model.int8.onnx"
+    onnx = (mdir / "model.int8.onnx") if use_int8 else (mdir / "model.onnx")
     if not onnx.exists():
-        onnx = mdir / "model.onnx"
+        onnx = mdir / "model.onnx" if use_int8 else mdir / "model.int8.onnx"
     _SESSION = ort.InferenceSession(str(onnx))
-    _SESSION_DIR = mdir
+    _SESSION_DIR = key
 
     tok2id = {}
     with open(mdir / "tokens.txt", encoding="utf-8") as f:
@@ -78,11 +81,11 @@ def _session(model_dir: str = None):
     return _SESSION
 
 
-def _logprobs(samples: np.ndarray, model_dir: str = None) -> np.ndarray:
+def _logprobs(samples: np.ndarray, model_dir: str = None, use_int8: bool = None) -> np.ndarray:
     """float32 mono 16 kHz [-1, 1] -> (T, vocab) CTC log-probs."""
     import kaldi_native_fbank as knf
 
-    sess = _session(model_dir)
+    sess = _session(model_dir, use_int8)
     opts = knf.FbankOptions()
     opts.frame_opts.dither = 0
     opts.frame_opts.snip_edges = False
@@ -156,6 +159,145 @@ def _word_loglik(lp: np.ndarray, word: str, model_dir: str = None) -> float:
     return max(_ctc_loglik(lp, s, blank) for s in segs)
 
 
+def _greedy_segmentation(word: str, tok2id: dict, blank: int) -> list:
+    """Single BPE segmentation of '▁'+word via greedy longest-piece match.
+    Used for multi-word (sentence) alignment, where enumerating every
+    segmentation per word (as `_segmentations` does for isolated-word
+    scoring) is unnecessary — forced alignment only needs one token path per
+    word, not the best-scoring one, since the audio-fit signal comes from
+    the per-frame posteriors, not the segmentation choice."""
+    target = "▁" + word.lower()
+    pos, toks = 0, []
+    while pos < len(target):
+        for end in range(len(target), pos, -1):
+            piece = target[pos:end]
+            if pos > 0 and "▁" in piece:
+                continue
+            tid = tok2id.get(piece)
+            if tid is not None and tid != blank and piece != "<unk>":
+                toks.append(tid)
+                pos = end
+                break
+        else:
+            pos += 1  # unmapped char (rare for English words): skip it
+    return toks
+
+
+def _sentence_tokens(words: list, tok2id: dict, blank: int) -> tuple:
+    """Flatten `words` into one BPE token sequence for sentence-level forced
+    alignment, plus each word's (start, end) index span (end exclusive) into
+    that flat sequence. A word that fails to segment gets an empty span."""
+    flat, spans = [], []
+    for w in words:
+        toks = _greedy_segmentation(w, tok2id, blank)
+        start = len(flat)
+        flat.extend(toks)
+        spans.append((start, len(flat)))
+    return flat, spans
+
+
+def _ctc_viterbi(lp: np.ndarray, tokens: list, blank: int) -> tuple:
+    """Max-path (Viterbi) CTC forced alignment: the single best per-frame
+    state path over the extended label sequence (same construction as
+    `_ctc_loglik`, but argmax instead of logsumexp so frame boundaries can be
+    read off by backtracking). Returns (state_path (T,) int64, loglik)."""
+    ext = []
+    for t in tokens:
+        ext += [blank, t]
+    ext.append(blank)
+    ext = np.array(ext)
+    S, T = len(ext), lp.shape[0]
+    can_skip = np.zeros(S, dtype=bool)
+    can_skip[2:] = (ext[2:] != blank) & (ext[2:] != ext[:-2])
+
+    alpha = np.full(S, _NEG)
+    alpha[0] = lp[0, ext[0]]
+    if S > 1:
+        alpha[1] = lp[0, ext[1]]
+    back = np.zeros((T, S), dtype=np.int8)  # 0=stay, 1=step, 2=skip
+
+    for t in range(1, T):
+        stay = alpha
+        step = np.concatenate(([_NEG], alpha[:-1]))
+        skip = np.where(can_skip, np.concatenate(([_NEG, _NEG], alpha[:-2])), _NEG)
+        stacked = np.stack([stay, step, skip])
+        choice = np.argmax(stacked, axis=0)
+        alpha = stacked[choice, np.arange(S)] + lp[t, ext]
+        back[t] = choice
+
+    if S == 1:
+        end_state = 0
+    else:
+        end_state = S - 1 if alpha[-1] >= alpha[-2] else S - 2
+    loglik = float(alpha[end_state])
+    if loglik <= _NEG / 2:
+        return None, loglik  # not enough frames to cover the token sequence
+
+    path = np.zeros(T, dtype=np.int64)
+    s = end_state
+    path[T - 1] = s
+    for t in range(T - 1, 0, -1):
+        c = back[t, s]
+        s -= c  # c is 0 (stay), 1 (step) or 2 (skip) frames back in state index
+        path[t - 1] = s
+    return path, loglik
+
+
+def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
+                     model_dir: str = None, use_int8: bool = None) -> list:
+    """Force-align a full utterance's canonical `words` against `samples` and
+    return one GOP-style score per word (or None if that word couldn't be
+    segmented/aligned): `gop(w) = mean over w's aligned frames of
+    (lp_t(aligned label) - max_k lp_t(k))`, i.e. how much posterior mass the
+    model put elsewhere at each frame the word occupies. ~0 = the model is as
+    confident in the aligned path as in anything; very negative = the audio
+    doesn't fit the canonical word well at all.
+
+    Sentence-level counterpart to `score_word`'s single-word alignment (see
+    module docstring); used by scripts/eval_so762.py to validate against
+    speechocean762's per-word `accuracy` labels."""
+    samples = np.ascontiguousarray(samples, dtype=np.float32)
+    if samples.max(initial=0.0) > 1.0 or samples.min(initial=0.0) < -1.0:
+        samples = samples / 32768.0
+    if sr != SAMPLE_RATE:
+        from audiokit import resample
+
+        samples = np.asarray(resample(samples, sr, SAMPLE_RATE), dtype=np.float32)
+
+    _session(model_dir, use_int8)
+    lp = _logprobs(samples, model_dir, use_int8)
+    tok2id, blank = _VOCAB
+
+    flat_tokens, spans = _sentence_tokens(words, tok2id, blank)
+    if not flat_tokens:
+        return [None] * len(words)
+
+    path, loglik = _ctc_viterbi(lp, flat_tokens, blank)
+    if path is None:
+        return [None] * len(words)
+
+    ext_labels = np.array(
+        [blank if i % 2 == 0 else flat_tokens[i // 2] for i in range(2 * len(flat_tokens) + 1)]
+    )
+    frame_best = lp.max(axis=-1)
+
+    results = []
+    for start, end in spans:
+        if start == end:
+            results.append(None)
+            continue
+        lo, hi = 2 * start + 1, 2 * (end - 1) + 1
+        idx = np.nonzero((path >= lo) & (path <= hi))[0]
+        if idx.size == 0:
+            results.append(None)
+            continue
+        labels_at = ext_labels[path[idx]]
+        gop = float((lp[idx, labels_at] - frame_best[idx]).mean())
+        results.append({"start_frame": int(idx[0]), "end_frame": int(idx[-1]),
+                         "n_frames": int(idx.size), "gop": gop})
+    return results
+
+
 def _greedy_text(lp: np.ndarray) -> str:
     tok2id, blank = _VOCAB
     id2tok = {i: t for t, i in tok2id.items()}
@@ -215,10 +357,19 @@ def confusables(word: str) -> tuple:
     return tuple(found[:config.ALIGN_MAX_CONFUSABLES])
 
 
+def gop_to_fit(gop: float) -> float:
+    """exp(gop / ALIGN_GOP_SCALE): how well the audio fits the aligned target,
+    on a 0 (nothing like it) to ~1 (as good as anything) scale. `gop` is
+    always <= 0 (a posterior deficit from the frame-best label), so this is
+    naturally <= 1; the min() guards float rounding at gop == 0. Shared by
+    `_map_score`'s single-word blend and `proscor.score.score_gop_lite`'s
+    sentence-level GOP-lite score (PLAN.md section 5a)."""
+    return float(min(1.0, np.exp(gop / config.ALIGN_GOP_SCALE)))
+
+
 def _map_score(p_target: float, gop: float) -> float:
     """Blend candidate posterior + GOP fit into 0-100 (weights in config)."""
-    fit = float(np.exp(gop / config.ALIGN_GOP_SCALE))
-    blended = config.ALIGN_POSTERIOR_WEIGHT * p_target + config.ALIGN_GOP_WEIGHT * fit
+    blended = config.ALIGN_POSTERIOR_WEIGHT * p_target + config.ALIGN_GOP_WEIGHT * gop_to_fit(gop)
     return max(0.0, min(100.0, 100.0 * blended))
 
 

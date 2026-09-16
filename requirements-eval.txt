@@ -1,0 +1,9 @@
+# Optional: only needed for scripts/eval_so762.py and eval_so762_phone.py
+# (GOP-lite validation against speechocean762, PLAN.md section 5a). Not
+# required for the CLI/web app.
+huggingface_hub>=0.24
+pyarrow>=15.0
+scipy>=1.11
+phonemizer>=3.2   # eval_so762_phone.py only; needs the system espeak-ng library
+                  # (Debian/Ubuntu: apt install espeak-ng; already present as
+                  # libespeak-ng1 on most desktop Linux installs)
