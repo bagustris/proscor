@@ -41,7 +41,7 @@ def synthesize(
     cfg = TtsConfig(
         model_dir="", language=lang, speaker_id=speaker_id, speed=speed,
         output=out_path or "", play=False, no_save=out_path is None,
-        num_threads=1, audio_prompt="", audio_prompt_text="",
+        num_threads=1,
     )
     return synthesise_to_file(tts, text, cfg)
 
