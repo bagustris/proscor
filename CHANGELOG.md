@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model (`wav2vec2-lv-60-espeak-cv-ft`, espeak-ng IPA output), with targets
   phonemized live via `phonemizer`/espeak-ng rather than a hand-built
   ARPABET→IPA table. `scripts/eval_so762_phone.py`: full `test` split
-  phone-level Pearson r = 0.425 (94.6% coverage vs. the dataset's own phone
+  phone-level Pearson r = 0.425 (92.65% coverage vs. the dataset's own phone
   segmentation) — ~95% of the classic trained RF/SVR baselines' PCC,
   zero-shot; confirmed (not lower) on the untouched `train` split
   (r = 0.476). Word/utterance-level PCC (0.325 / 0.536 / 0.572) trail the

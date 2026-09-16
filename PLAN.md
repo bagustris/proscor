@@ -504,7 +504,7 @@ changed the plan to a staged rollout:
 
    | metric | this (zero-shot, test split) | literature (trained) |
    |---|---|---|
-   | phone-level PCC (matched-length words only, n=43,888/47,369 phones, 94.6% coverage) | **0.425** | GOPT-LibriSpeech 0.612; classic RF/SVR baselines (phone-only, no word/utt numbers exist for them; computed on all 47,369 phones) 0.440/0.450 |
+   | phone-level PCC (matched-length words only, n=43,888/47,369 phones, 92.65% coverage) | **0.425** | GOPT-LibriSpeech 0.612; classic RF/SVR baselines (phone-only, no word/utt numbers exist for them; computed on all 47,369 phones) 0.440/0.450 |
    | word-accuracy PCC | 0.325 | GOPT-LibriSpeech 0.533 |
    | utterance-accuracy PCC | 0.536 | GOPT-LibriSpeech 0.714 |
    | utterance-total PCC | 0.572 | GOPT-LibriSpeech 0.742 |
@@ -514,7 +514,7 @@ changed the plan to a staged rollout:
    published setup to a general, non-domain-specific ASR model. RF/SVR are
    the original speechocean762 paper's baselines, phone-level only.)
 
-   The phone-level number (0.425, on the 94.6% of phones with a matching
+   The phone-level number (0.425, on the 92.65% of phones with a matching
    count against the dataset's own segmentation — see the coverage-bias
    note below) is the literature-comparable headline metric this section
    originally wanted, and it lands close to the classic *trained* RF/SVR
@@ -569,7 +569,7 @@ changed the plan to a staged rollout:
    lowercases before calling espeak (with a regression test in
    `tests/test_align_phone.py`, skipped when espeak-ng isn't installed). Full
    re-run after the fix: every number in the table above rose slightly
-   (word-level PCC 0.302→0.325, phone coverage 91.2%→94.6%) — the fix
+   (word-level PCC 0.302→0.325, phone coverage 91.21%→92.65%) — the fix
    helped, as expected, and the effect size matches the bug's small blast
    radius. The all-caps text is also fed unmodified to `align.py`'s BPE path
    (`eval_so762.py`) and `g2p_en`/CMUdict (case-insensitive lookups), neither
@@ -602,7 +602,7 @@ changed the plan to a staged rollout:
    ARPABET/IPA equivalence-class table — the same one an earlier abandoned
    static-mapping attempt produced, repurposed here as a *matching*
    heuristic instead of a *target-generation* one — for scoring 1:1 matches)
-   should reconcile, raising phone-level coverage from 94.6% toward
+   should reconcile, raising phone-level coverage from 92.65% toward
    ~98-99%; (d) would remain a small, principled exclusion. Not yet
    implemented — this is the scoped design for that follow-up, not a
    completed one.
