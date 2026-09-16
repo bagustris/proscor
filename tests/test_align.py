@@ -109,6 +109,29 @@ def test_ctc_viterbi_reports_failure_when_audio_too_short():
     assert loglik <= align._NEG / 2
 
 
+def test_ctc_viterbi_backtracks_long_sequences_without_overflow():
+    """Regression test: found via scripts/eval_umeerj.py on UME-ERJ's longer
+    sentences (~0.4% failure rate there). The backtracking loop did
+    `s -= back[t, s]` where `back` is int8 (its values are only ever 0/1/2)
+    and `s` is a Python int state index -- under NumPy 2's type-promotion
+    rules that tries to keep the *result* in int8 too, raising
+    `OverflowError: Python integer N out of bounds for int8` once a state
+    index exceeds 127 (i.e. utterances with more than ~64 tokens; silent
+    wraparound instead of a crash under NumPy 1.x). speechocean762's shorter
+    utterances never hit this. 69 tokens here -> S=139 > 127, so this would
+    have crashed before the `int(...)` cast was added."""
+    rng = np.random.default_rng(0)
+    blank = 0
+    V = 100
+    tokens = list(range(1, 70))
+    T = 300
+    lp = np.log(rng.dirichlet(np.ones(V), size=T))
+    path, loglik = align._ctc_viterbi(lp, tokens, blank)
+    assert path is not None
+    assert path.max() > 127  # state indices genuinely exceed int8 range
+    assert loglik > align._NEG / 2
+
+
 def test_align_words_gop_scores_near_zero_for_perfectly_matching_audio(monkeypatch):
     """End-to-end (still offline): stub out the ONNX session/logprobs so
     align_words_gop's frame-span/GOP bookkeeping is exercised without a

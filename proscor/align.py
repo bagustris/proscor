@@ -237,8 +237,14 @@ def _ctc_viterbi(lp: np.ndarray, tokens: list, blank: int) -> tuple:
     s = end_state
     path[T - 1] = s
     for t in range(T - 1, 0, -1):
-        c = back[t, s]
-        s -= c  # c is 0 (stay), 1 (step) or 2 (skip) frames back in state index
+        # int(...): `back` is int8 (its values are only ever 0/1/2), but
+        # under NumPy 2's type-promotion rules, `s -= back[t, s]` tries to
+        # keep the *result* in int8 too when `s` is a plain Python int --
+        # and `s` (a state index, up to ~2*len(tokens)) overflows int8 well
+        # before a long utterance's token count gets exotic (OverflowError
+        # above ~64 tokens, i.e. ~32-phone words/utterances -- silent with
+        # NumPy 1.x, which wrapped instead of raising).
+        s -= int(back[t, s])
         path[t - 1] = s
     return path, loglik
 
