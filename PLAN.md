@@ -408,6 +408,205 @@ Wire both behind `--engine gop` (or `--engine gop-lite`) and keep
 `--engine intelligibility` (Step 5) as the default. Blend optionally:
 `score = 0.6*intelligibility + 0.4*gop` (weights in `config.py`).
 
+### 5a. Status: word-level GOP-lite implemented and validated; phone-level pending
+
+**Correction to the paragraph above:** the default ASR model
+(`sherpa-onnx-nemo-ctc-en-conformer-medium`) is a **BPE-subword CTC model**
+(`tokens.txt` is `▁the`, `ing`, `ed`, single letters, ...), not a phoneme
+model. There is no per-*phone* posterior to read from it. This was discovered
+when implementing the "read per-frame phoneme posteriors" step above, and
+changed the plan to a staged rollout:
+
+1. **Word-level GOP-lite (implemented, validated):** `proscor/align.py` gained
+   sentence-level CTC **Viterbi** forced alignment (`_ctc_viterbi`, max-path
+   with backpointers, alongside the existing forward-only `_ctc_loglik` used
+   for single-word scoring) plus `align_words_gop(samples, words)`, which
+   force-aligns a full utterance's canonical word sequence (greedy BPE
+   segmentation per word — sentencepiece isn't shipped with this model dir,
+   see `_greedy_segmentation`) and returns a per-word GOP score:
+   `mean over the word's aligned frames of (log P(aligned token) - max_k log P(token k))`
+   — how much posterior mass the model placed elsewhere at each frame the
+   word occupies.
+2. **Validation harness (implemented):** `scripts/eval_so762.py` downloads
+   [speechocean762](https://huggingface.co/datasets/mispeech/speechocean762)
+   (HF parquet mirror, cached under `~/.cache/huggingface`, not stored in this
+   repo), force-aligns each utterance's *dataset-canonical* word text (never
+   proscor's G2P, so G2P errors can't contaminate the eval) against the
+   dataset audio, and correlates the GOP score against the dataset's human
+   per-word `accuracy` label (0-10). Needs `pip install -r requirements-eval.txt`
+   (huggingface_hub, pyarrow, scipy — kept out of the core `requirements.txt`
+   since the CLI/web app never needs them).
+3. **Result (full `test` split, 2500 utterances, 15,967 words):**
+
+   | precision | time (CPU) | word PCC vs. `accuracy` | word ρ | utt PCC vs. `accuracy` | utt PCC vs. `total` |
+   |---|---|---|---|---|---|
+   | int8 (`model.int8.onnx`, app default) | 243s | 0.471 | 0.392 | 0.556 | 0.589 |
+   | fp32 (`model.onnx`) | 114s | 0.467 | 0.395 | 0.544 | 0.579 |
+
+   Quantization makes essentially no difference to correlation quality here
+   (and fp32 ran *faster* in this onnxruntime build — not the expected
+   direction, not chased further). `ALIGN_USE_INT8` (`config.py`) controls
+   which weights `proscor/align.py` loads; `scripts/eval_so762.py --fp32`
+   overrides it for eval runs. Mean GOP drops monotonically with human
+   accuracy (int8: -0.68 at word-accuracy 10 down to -11.1 at word-accuracy
+   0). Align rate 100% (every canonical word in the test split segmented
+   under the model's BPE vocab). Raw per-word records + logs for both runs
+   are under `results/` (gitignored - regenerate via
+   `python scripts/eval_so762.py [--fp32]`, ~2-4 min).
+
+   **Comparison to the literature** (Table 1 of [GOPT (Gong et al., ICASSP
+   2022, arXiv:2205.03432)](https://arxiv.org/abs/2205.03432), the standard
+   speechocean762 reference, mean over 5 seeds): the original
+   speechocean762 paper's RF/SVR baselines only report **phone-level** PCC
+   (0.440 / 0.450 — no word/utterance numbers exist to compare against at
+   those granularities). GOPT's own LibriSpeech-acoustic-model variant (the
+   closest published setup to ours — a public, non-domain-specific ASR
+   model) reports phone PCC 0.612, word-accuracy PCC 0.533, utterance-
+   accuracy PCC 0.714, utterance-total PCC 0.742. GOPT is a **trained**
+   multi-task Transformer on top of Kaldi TDNN-F GOP features; GOP-lite here
+   is **zero-shot** — no training data, no pronunciation-scoring-specific
+   model, just posterior deficit from a general BPE ASR model. Landing at
+   88% of GOPT's word-level PCC (0.471/0.533) and 78-79% of its utterance-
+   level PCC (0.556/0.714 accuracy, 0.589/0.742 total) with zero training is
+   the systems-paper result: a CPU-only, off-the-shelf-ASR GOP proxy gets
+   most of the way to a trained baseline for free.
+
+   **Limitation found during validation - GOP zero-inflation:** the fraction
+   of words with `gop == 0.0` (the Viterbi-aligned label *is* the frame's
+   argmax, i.e. the CTC path can't fit any better) rises monotonically with
+   human accuracy: 0% at word-accuracy 0-2, 39% at accuracy 8, **74% at
+   accuracy 10**. The metric saturates on "obviously correct" speech instead
+   of distinguishing good from excellent — expected for whole-word BPE units
+   (few, coarse-grained decision points per word) and the likely reason
+   Spearman ρ trails Pearson r at word level (rank ties on both axes). A
+   finer unit (phones - see next item) should shrink this.
+4. **Phone-level GOP (implemented, validated) — a genuine phone model, plus
+   a caveat about aggregation:** `proscor/align_phone.py` uses
+   `onnx-community/wav2vec2-lv-60-espeak-cv-ft-ONNX` (an ONNX export of
+   `facebook/wav2vec2-lv-60-espeak-cv-ft`, ~320MB int8 / ~1.2GB fp32,
+   downloaded from the Hub on first use — heavier than the BPE model, an
+   evaluation-only path, **not wired into the CLI/web app**). It takes raw
+   waveform (no fbank step) and outputs a 392-symbol espeak-ng IPA vocab —
+   genuinely phone-level, unlike the BPE model. Targets are generated by
+   phonemizing each canonical word live with the `phonemizer` package's
+   espeak-ng backend (same tool that produced the model's training labels),
+   not a hand-built ARPABET→IPA table: a static-table attempt was checked
+   against the model's actual greedy decode output first and found wrong —
+   espeak merges vowel+R into single rhotic tokens (e.g. `ɑːɹ` for the vowel
+   in "mark") and the table missed that, so live phonemization was used
+   instead. Reuses `proscor.align._ctc_viterbi` (generic over any token
+   sequence, not BPE-specific) for the forced alignment itself.
+
+   **Result (full `test` split, 2500 utterances, 15,967 words, int8,
+   ~16 min CPU — `scripts/eval_so762_phone.py`, `results/so762_test_phone_int8_summary.json`):**
+
+   | metric | this (zero-shot) | literature (trained) |
+   |---|---|---|
+   | phone-level PCC (matched-length words only, n=43,204/47,369 phones, 91.2% coverage) | **0.426** | GOPT-LibriSpeech 0.612; classic RF/SVR baselines (phone-only, no word/utt numbers exist for them; computed on all 47,369 phones) 0.440/0.450 |
+   | word-accuracy PCC | 0.302 | GOPT-LibriSpeech 0.533 |
+   | utterance-accuracy PCC | 0.523 | GOPT-LibriSpeech 0.714 |
+   | utterance-total PCC | 0.560 | GOPT-LibriSpeech 0.742 |
+
+   (GOPT numbers are Table 1 of [Gong et al., ICASSP 2022, arXiv:2205.03432](https://arxiv.org/abs/2205.03432),
+   mean over 5 seeds, LibriSpeech-acoustic-model variant — the closest
+   published setup to a general, non-domain-specific ASR model. RF/SVR are
+   the original speechocean762 paper's baselines, phone-level only.)
+
+   The phone-level number (0.426, on the 91.2% of phones with a matching
+   count against the dataset's own segmentation — see the coverage-bias
+   note below) is the literature-comparable headline metric this section
+   originally wanted, and it lands close to the classic *trained* RF/SVR
+   baselines (94.7-96.8% of them, though those were computed on 100% of
+   phones) with **zero training** — a legitimate systems-paper result. The
+   unexpected finding: **this phone
+   model's word/utterance-level PCC is lower than the simpler BPE model's**
+   (item 3 above: word 0.471, utt-accuracy 0.556, utt-total 0.589) despite
+   finer alignment granularity and a purpose-built phoneme vocabulary.
+   Likely causes, not disentangled here: (a) domain mismatch — this
+   wav2vec2-large model is trained on adult multilingual CommonVoice speech
+   via espeak's *automatically generated* (not hand-verified) phoneme
+   labels, while speechocean762 is child L2 English speech, a harder
+   acoustic domain than adult native/fluent L2 speech; (b) word-level
+   aggregation averages over more, noisier phone-level units per word than
+   the BPE model averages over subword units, so per-phone noise has more
+   opportunities to accumulate. A first version of `align_words_gop`'s word
+   score (mean over the word's whole frame *span*, including blank frames
+   between phones — mirroring the BPE model's formula) measured far worse
+   (word PCC 0.03 on a 100-utterance sample) than the current version (mean
+   of the word's *phone*-only GOP values, ignoring inter-phone blank
+   frames, PCC 0.22 on the same sample) — blank frames dilute the signal
+   more here because a word has many more phone/blank transitions than
+   BPE/blank transitions. **A competitor-set contamination hypothesis was
+   checked and ruled out:** the 392-symbol vocab has near-duplicate
+   symbols across languages for the same English sound (e.g. `uː`/`u`,
+   `iː`/`i`), which could make `max_k lp_t(k)` an unfair competitor if the
+   model splits mass across spelling variants of the same sound. A manual
+   check of the worst (`gop < -1`) phones on human-accuracy-10 words (300
+   utterances) found the dominant confusions were phonetically genuine
+   (vowel reduction to schwa, place/manner shifts like `t`→`k`, `ð`→`d`,
+   weak/blank realization of light consonants), not cross-lingual spelling
+   duplicates — so this is left as real GOP signal, not a vocab artifact to
+   fix by restricting the competitor set.
+
+   Bottom line for `--engine gop-lite`: the BPE model (item 3) remains the
+   shipped default — it is both cheaper and empirically better at
+   word/utterance granularity, which is what the CLI/web app actually
+   surfaces to a learner. The phone model's role is the validated
+   literature-comparable phone-level number above, not a better runtime
+   engine as-is; wiring it in would need the aggregation question above
+   resolved first (e.g. a learned or tuned per-phone weighting instead of a
+   flat mean).
+
+   **Coverage-bias note:** the excluded 8.8% of phones (where the espeak
+   phone count for a word didn't match the dataset's ARPABET segmentation)
+   are not a random sample — they're disproportionately words with
+   vowel+R sequences that espeak merges into one rhotic token ("mark",
+   "four"; see the R-merging discussion above), so the 0.426 figure is
+   *approximate with an unknown bias direction*, not a lower or upper bound.
+
+   **Precision:** fp32 was not run at full scale for this model (it's 4x
+   larger than the BPE model; a full run was judged not worth the added
+   compute). A 100-utterance pre-aggregation-fix check showed int8 vs. fp32
+   within ~0.03 PCC on the matched-phone comparison, consistent with the BPE
+   model's full-scale finding (item 3) that precision barely matters here.
+
+   **Test-set peeking:** the switch from span-based to phone-mean word-GOP
+   aggregation (PCC 0.03 -> 0.22) and the competitor-set contamination
+   check were both diagnosed on `test`-split subsamples — standard practice
+   for debugging, but it means the `test`-split numbers above aren't purely
+   held-out for the aggregation *choice* (the diagnostic changed nothing,
+   just confirmed the null result). The `train` split (2,500 more
+   utterances) has not been touched by any decision in this section;
+   running `scripts/eval_so762_phone.py --split train` (~16 min) to confirm
+   0.30/0.43 hold there is the natural next check before this goes in a
+   paper.
+5. **Wired into the app:** `proscor.score.score_gop_lite` force-aligns a
+   multi-word target (`align.align_words_gop`) and maps each word's GOP to
+   0-100 via the shared `align.gop_to_fit` transform (factored out of
+   `_map_score`, same `exp(gop / ALIGN_GOP_SCALE)` formula). `score_audio`
+   takes `engine="intelligibility"` (default) or `"gop-lite"`, falling back
+   to the intelligibility path if the alignment extras aren't installed.
+   Exposed as `cli.py --engine {intelligibility,gop-lite}`, an `engine` form
+   field on `POST /api/score` (default `"intelligibility"`, so existing
+   callers are unaffected), and a scoring-engine `<select>` in
+   `web/static/index.html`. `GOP_LITE_CORRECT_THRESHOLD = 60` (`config.py`)
+   decides the "correct" pass/fail line; from the full test-split GOP-lite
+   scores, 81.2% of human-accuracy-10 words land >= 60 and 73.8% of
+   accuracy-<=5 words land < 60 — a real but noisy classifier (word-level
+   Pearson r = 0.47), so both `feedback.format_report` (CLI) and the web
+   table also show the continuous `word_score` rather than only pass/fail.
+
+   Because GOP-lite force-aligns *to* the target instead of free-decoding,
+   `recognized` is always the target word even when the fit is poor — a
+   low-scoring word is always a poor *fit*, never a different word that was
+   "heard" instead, and both renderers special-case `recognized == target &&
+   !correct` so they don't misreport it as one: the CLI prints `LOW word
+   [phones] fit NN/100` instead of a `MISS ... -> heard "X"` line, and the
+   web table's "Heard" column prints `(fit NN/100)` instead of the (always
+   identical to target) recognized word. Verified end-to-end over real HTTP
+   requests to `POST /api/score` for both engines, not just at the
+   Python-call level.
+
 ---
 
 ## 6. CLI commands summary  (completing the empty section from the old plan)

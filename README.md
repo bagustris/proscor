@@ -31,10 +31,12 @@ Prompt  ->  G2P  ->  Record  ->  ASR  ->  Score + feedback
    (e.g. `TH -> T`) and a plain-English hint (`TH as in think`).
 
 > [!NOTE]
-> This scores **intelligibility** — whether the ASR model understood the intended
-> word — not native-likeness/accent. It's a strong, cheap proxy for most learners.
-> True accent scoring (Goodness-of-Pronunciation) is documented as an optional,
-> not-yet-implemented track in [`PLAN.md`](PLAN.md#5-optional-advanced-track---true-pronunciation-scoring-gop).
+> This default scoring is **intelligibility** — whether the ASR model understood
+> the intended word — not native-likeness/accent. It's a strong, cheap proxy for
+> most learners. A Goodness-of-Pronunciation proxy is also available: pass
+> `--engine gop-lite` on the CLI, or pick it from the "Scoring" dropdown in the
+> web app; see [`PLAN.md`](PLAN.md#5-optional-advanced-track---true-pronunciation-scoring-gop)
+> for what it measures, its validation against speechocean762, and its limits.
 
 A synthetic reference voice (Piper TTS via sherox) can also read the prompt aloud
 first, so learners know what they're aiming for.
@@ -99,6 +101,7 @@ scores it. Useful flags:
 python cli.py --seconds 4 --prompt-file data/prompts.txt
 python cli.py --tts-lang eng      # spoken reference before recording
 python cli.py --no-tts            # skip the reference voice
+python cli.py --engine gop-lite   # Goodness-of-Pronunciation proxy instead of intelligibility
 ```
 
 In-loop keys: `p` play reference, `r` retry, `n` next prompt, `q` quit.

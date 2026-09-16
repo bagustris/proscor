@@ -10,6 +10,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Sentence-level GOP-lite (word granularity)** (`proscor/align.py`): CTC
+  Viterbi forced alignment (`_ctc_viterbi`) and `align_words_gop`, which
+  force-aligns a full utterance's canonical words against the audio (greedy
+  BPE segmentation per word) and returns a per-word Goodness-of-Pronunciation
+  score (mean posterior deficit over the word's aligned frames). Extends the
+  existing single-word forced-alignment scoring (`score_word`) to multi-word
+  utterances; see `PLAN.md` section 5a.
+- **`scripts/eval_so762.py`**: validates GOP-lite against
+  [speechocean762](https://huggingface.co/datasets/mispeech/speechocean762)'s
+  human per-word/utterance accuracy labels. Full `test` split (2500
+  utterances, 15,967 words): word-level Pearson r = 0.47, utterance-level r =
+  0.56-0.59 (int8; fp32 near-identical, see `PLAN.md` section 5a). Zero-shot,
+  ~75-90% of trained GOPT's PCC (Gong et al., ICASSP 2022) at word/utterance
+  level. New optional `requirements-eval.txt` (huggingface_hub, pyarrow,
+  scipy) for this script only; new `ALIGN_USE_INT8` config toggle
+  (`proscor/config.py`) for int8 vs. fp32 alignment weights.
+- Offline unit tests for the new alignment functions in `tests/test_align.py`
+  (Viterbi backtracking, greedy BPE segmentation, `align_words_gop` with a
+  stubbed ONNX session).
+- **`--engine gop-lite`**: `proscor.score.score_gop_lite` + `score_audio(...,
+  engine=...)` wire the word-level GOP-lite scorer into the app (falls back
+  to the intelligibility engine if the alignment extras aren't installed).
+  Exposed as `cli.py --engine {intelligibility,gop-lite}`, an `engine` form
+  field on `POST /api/score`, and a scoring-engine dropdown in
+  `web/static/index.html`. Because GOP-lite force-aligns to the target
+  rather than free-decoding, `feedback.format_report` (CLI) now renders a
+  low-scoring GOP-lite word as a `LOW word [phones] fit NN/100` line and the
+  web results table shows `(fit NN/100)`, instead of a `MISS ... -> heard
+  "X"` line/cell that would misreport what was actually heard.
+- **Phone-level GOP-lite** (`proscor/align_phone.py`, evaluation-only, not
+  wired into the app): forced alignment against a genuine phoneme-CTC ONNX
+  model (`wav2vec2-lv-60-espeak-cv-ft`, espeak-ng IPA output), with targets
+  phonemized live via `phonemizer`/espeak-ng rather than a hand-built
+  ARPABET→IPA table. `scripts/eval_so762_phone.py`: full `test` split
+  phone-level Pearson r = 0.43 (92.5% coverage vs. the dataset's own phone
+  segmentation) — 95-97% of the classic trained RF/SVR baselines' PCC,
+  zero-shot. Word/utterance-level PCC (0.30 / 0.52 / 0.56) trail the
+  simpler BPE model, so the BPE model stays the shipped `--engine gop-lite`
+  default; see `PLAN.md` section 5a item 4 for the full comparison and the
+  root-caused aggregation bug fix along the way (word GOP as mean of
+  per-phone GOP, not mean over the whole frame span including blanks).
+  New `requirements-eval.txt` entry: `phonemizer` (needs system espeak-ng).
+
+### Fixed
+- `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
+  to `sherox.tts.TtsConfig`, which the installed `sherox` version's
+  `TtsConfig` no longer accepts (`TypeError: unexpected keyword argument`).
+  Broke reference-audio playback everywhere it's used: the CLI's `p`lay
+  command, the web app's `/api/reference` endpoint, and
+  `scripts/selftest.py`. Dropped the two removed fields.
+
 ## [1.0.1] - 2026-07-14
 
 ### Added
