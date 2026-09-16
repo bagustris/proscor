@@ -6,3 +6,4 @@ data/uploads/
 .pytest_cache/
 *.egg-info/
 .coverage
+web/certs/

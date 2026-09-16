@@ -112,6 +112,30 @@ uvicorn web.server:app --reload --port 8000
 Open <http://localhost:8000>: play the reference audio, record with the browser,
 and see the score plus a per-word breakdown.
 
+#### Accessing from another PC on the LAN
+
+Browsers only allow microphone access (`getUserMedia`) on secure origins —
+`localhost` or HTTPS. To reach the app from another machine on the network:
+
+1. Generate a self-signed cert once (already done if `web/certs/` exists):
+   ```bash
+   mkdir -p web/certs
+   openssl req -x509 -newkey rsa:2048 -nodes \
+     -keyout web/certs/key.pem -out web/certs/cert.pem -days 365 \
+     -subj "/CN=proscor-dev" \
+     -addext "subjectAltName=IP:<your-lan-ip>,IP:127.0.0.1,DNS:localhost"
+   ```
+   Find `<your-lan-ip>` with `ip addr show | grep 'inet '`.
+2. Run uvicorn bound to all interfaces with TLS:
+   ```bash
+   uvicorn web.server:app --host 0.0.0.0 --port 8000 \
+     --ssl-keyfile web/certs/key.pem --ssl-certfile web/certs/cert.pem
+   ```
+3. From the other PC, open `https://<your-lan-ip>:8000` and accept the
+   self-signed cert warning (it's expected — the cert isn't CA-signed).
+4. If the connection is refused, allow the port through the firewall:
+   `sudo ufw allow 8000/tcp`.
+
 ## Project layout
 
 ```
