@@ -53,7 +53,7 @@ import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from proscor import align_phone
+from proscor import align_phone, stats as gopstats
 
 
 def load_split(split: str):
@@ -67,10 +67,10 @@ def load_split(split: str):
 
 
 def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
-    word_gop, word_acc = [], []
-    utt_gop_mean, utt_acc, utt_total = [], [], []
-    phone_gop_matched, phone_acc_matched = [], []
-    phone_gop_reconciled, phone_acc_reconciled = [], []
+    word_gop, word_acc, word_speaker = [], [], []
+    utt_gop_mean, utt_acc, utt_total, utt_speaker = [], [], [], []
+    phone_gop_matched, phone_acc_matched, phone_speaker_matched = [], [], []
+    phone_gop_reconciled, phone_acc_reconciled, phone_speaker_reconciled = [], [], []
     phone_gop_newly_covered, phone_acc_newly_covered = [], []
     op_counts = defaultdict(int)
     n_words_total = n_words_aligned = 0
@@ -82,6 +82,7 @@ def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
         samples, sr = sf.read(io.BytesIO(row["audio"]["bytes"]), dtype="float32")
         words = [w["text"] for w in row["words"]]
         n_words_total += len(words)
+        speaker = row["speaker"]
         try:
             result = align_phone.align_words_gop(samples, words, sr=sr, use_int8=use_int8)
         except Exception as e:
@@ -95,6 +96,7 @@ def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
             n_words_aligned += 1
             word_gop.append(wg["gop"])
             word_acc.append(w["accuracy"])
+            word_speaker.append(speaker)
             this_utt_gops.append(wg["gop"])
 
             dataset_phones = w["phones"]
@@ -107,6 +109,7 @@ def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
                     if p is not None:
                         phone_gop_matched.append(p["gop"])
                         phone_acc_matched.append(a)
+                        phone_speaker_matched.append(speaker)
 
             espeak_phones = [p["phone"] for p in pg if p is not None]
             espeak_gops = [p["gop"] for p in pg if p is not None]
@@ -118,6 +121,7 @@ def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
                         continue
                     phone_gop_reconciled.append(g)
                     phone_acc_reconciled.append(a)
+                    phone_speaker_reconciled.append(speaker)
                     if not length_matched:
                         phone_gop_newly_covered.append(g)
                         phone_acc_newly_covered.append(a)
@@ -126,6 +130,7 @@ def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
             utt_gop_mean.append(float(np.mean(this_utt_gops)))
             utt_acc.append(row["accuracy"])
             utt_total.append(row["total"])
+            utt_speaker.append(speaker)
 
         if (i + 1) % progress_every == 0:
             elapsed = time.time() - t0
@@ -133,10 +138,12 @@ def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
                   f"{elapsed / (i + 1) * 1000:.0f}ms/utt)", file=sys.stderr)
 
     return {
-        "word_gop": word_gop, "word_acc": word_acc,
-        "utt_gop_mean": utt_gop_mean, "utt_acc": utt_acc, "utt_total": utt_total,
+        "word_gop": word_gop, "word_acc": word_acc, "word_speaker": word_speaker,
+        "utt_gop_mean": utt_gop_mean, "utt_acc": utt_acc, "utt_total": utt_total, "utt_speaker": utt_speaker,
         "phone_gop_matched": phone_gop_matched, "phone_acc_matched": phone_acc_matched,
+        "phone_speaker_matched": phone_speaker_matched,
         "phone_gop_reconciled": phone_gop_reconciled, "phone_acc_reconciled": phone_acc_reconciled,
+        "phone_speaker_reconciled": phone_speaker_reconciled,
         "phone_gop_newly_covered": phone_gop_newly_covered, "phone_acc_newly_covered": phone_acc_newly_covered,
         "op_counts": dict(op_counts),
         "n_utterances": len(rows), "n_words_total": n_words_total,
@@ -201,6 +208,31 @@ def main():
     phone_corr_newly_covered = correlations(results["phone_gop_newly_covered"], results["phone_acc_newly_covered"])
     buckets = bucket_by_accuracy(results["word_gop"], results["word_acc"])
 
+    # Speaker-cluster bootstrap CIs -- words/phones cluster within a speaker
+    # (a child's ability level correlates across all their words/phones), so
+    # a naive per-item Fisher-z CI is not the right uncertainty to report;
+    # see PLAN.md section 5c and proscor/stats.py for why.
+    word_corr_ci = gopstats.cluster_bootstrap_pearson(
+        results["word_gop"], results["word_acc"], results["word_speaker"]) if results["word_gop"] else None
+    utt_corr_acc_ci = gopstats.cluster_bootstrap_pearson(
+        results["utt_gop_mean"], results["utt_acc"], results["utt_speaker"]) if results["utt_gop_mean"] else None
+    phone_corr_matched_ci = gopstats.cluster_bootstrap_pearson(
+        results["phone_gop_matched"], results["phone_acc_matched"], results["phone_speaker_matched"]
+    ) if results["phone_gop_matched"] else None
+    phone_corr_reconciled_ci = gopstats.cluster_bootstrap_pearson(
+        results["phone_gop_reconciled"], results["phone_acc_reconciled"], results["phone_speaker_reconciled"]
+    ) if results["phone_gop_reconciled"] else None
+
+    # Like-for-like check against L2-ARCTIC's binary correct/error label
+    # (speechocean762's phones-accuracy is graded 0-2): binarizing here lets
+    # a reader tell how much of the so762-vs-L2-ARCTIC phone-level PCC gap
+    # is a label-granularity artifact rather than a real corpus difference.
+    binary_acc_reconciled = [1 if a >= 2 else 0 for a in results["phone_acc_reconciled"]]
+    phone_corr_reconciled_binarized = correlations(results["phone_gop_reconciled"], binary_acc_reconciled)
+    phone_corr_reconciled_binarized_ci = gopstats.cluster_bootstrap_pearson(
+        results["phone_gop_reconciled"], binary_acc_reconciled, results["phone_speaker_reconciled"]
+    ) if results["phone_gop_reconciled"] else None
+
     # Two different denominators on purpose -- do not conflate them (see
     # PLAN.md section 5a item 4, "phone coverage" vs. "word match rate" were
     # mixed up twice before this explicit split was added).
@@ -223,10 +255,16 @@ def main():
         "op_counts": results["op_counts"],
         "elapsed_s": round(results["elapsed_s"], 1),
         "word_level_vs_word_accuracy": word_corr,
+        "word_level_vs_word_accuracy_speaker_cluster_ci": word_corr_ci,
         "utterance_level_vs_accuracy": utt_corr_acc,
+        "utterance_level_vs_accuracy_speaker_cluster_ci": utt_corr_acc_ci,
         "utterance_level_vs_total": utt_corr_total,
         "phone_level_matched_only": phone_corr_matched,
+        "phone_level_matched_only_speaker_cluster_ci": phone_corr_matched_ci,
         "phone_level_reconciled": phone_corr_reconciled,
+        "phone_level_reconciled_speaker_cluster_ci": phone_corr_reconciled_ci,
+        "phone_level_reconciled_binarized": phone_corr_reconciled_binarized,
+        "phone_level_reconciled_binarized_speaker_cluster_ci": phone_corr_reconciled_binarized_ci,
         "phone_level_newly_covered_only": phone_corr_newly_covered,
         "mean_gop_by_word_accuracy": buckets,
     }

@@ -1035,6 +1035,131 @@ a minor or speculative factor next to "age/domain match".
 
 ---
 
+### 5d. Statistical rigor pass: cluster-bootstrap CIs and paired-difference tests
+
+Everywhere above, Pearson r is reported as a point estimate at the raw
+item count (words/phones/utterances) with no uncertainty interval, and
+every "engine A beats engine B" claim (5a: BPE beats phone at word level;
+5b: phone beats BPE on UME-ERJ; 5c: a near-tie on L2-ARCTIC) rests on
+eyeballing two point estimates. Both are real gaps for a systems paper: a
+Fisher-z CI computed on the item count would be wrong (words/phones cluster
+within speakers — a child who's a strong/weak speaker produces correlated
+scores across all their words), and comparing two independently-computed
+marginal CIs for overlap is a weaker test than it looks (two engines
+scoring the *same* audio produce correlated errors, so their difference
+has less sampling noise than the two marginals combined would suggest).
+
+**Method** (`proscor/stats.py`, unit-tested in `tests/test_stats.py`):
+`cluster_bootstrap_pearson` resamples whole speakers (not items) with
+replacement, 2000 draws, percentile 95% CI — the item count is reported
+alongside the cluster count so a reader can see which one actually governs
+the interval width. `cluster_bootstrap_paired_diff` does the same but on
+`r(engine_A, label) - r(engine_B, label)` computed on the *same* resampled
+clusters each draw, preserving the item-level pairing; "significant" means
+the CI excludes zero. `kruskal_by_group` is a Kruskal-Wallis H-test taking
+per-*speaker* r values (not per-item scores) as the unit, for "does language
+have a real effect on phone-level PCC" (section 5c).
+
+**5a (speechocean762), word-level BPE vs. phone — the flip survives:**
+BPE r=0.471 (CI 0.390-0.536) vs. phone r=0.325 (CI 0.264-0.382); paired
+diff = 0.146 (CI **0.102-0.186, excludes zero**) — BPE's word-level win is
+real, not point-estimate noise. **Utterance-level does NOT survive**: BPE
+0.556 (CI 0.484-0.618) vs. phone 0.536 (CI 0.456-0.604), paired diff =
+0.021 (CI **-0.043 to 0.090, includes zero**) — the previously-reported
+"BPE 0.556 vs phone 0.536" utterance-level margin should not be read as a
+real difference; the two engines are statistically indistinguishable at
+utterance granularity, only the word-level comparison supports "BPE wins."
+(`scripts/eval_so762_paired.py`, `results/so762_paired_test.json`.)
+
+**5a phone-level, binarized-label check (the cheap test flagged as owed in
+section 5c):** speechocean762's phone label is graded 0-2
+(reconciled PCC 0.433, CI 0.387-0.477); binarizing it the same way
+L2-ARCTIC's label is binary (`accuracy == 2` -> correct) drops the
+correlation to r=0.337 (CI 0.305-0.370). That's roughly half the gap to
+L2-ARCTIC's pooled phone-level r=0.224 (CI 0.159-0.280) closed by label
+granularity alone — real corpora difficulty accounts for less of the
+original 0.433-vs-0.206 gap than it looked like, but a real gap remains
+(0.337's CI floor, 0.305, still sits above 0.224's CI ceiling, 0.280 — not
+overlapping). (`scripts/eval_so762_phone.py`,
+`phone_level_reconciled_binarized` in `results/so762_phone_test.json`.)
+
+**5b (UME-ERJ), BPE vs. phone per category — the ranking flip is real for
+the categories that matter most:**
+
+| category | BPE r (CI) | phone r (CI) | paired diff (CI) | verdict |
+|---|---|---|---|---|
+| sentence-segmental | 0.328 (0.284-0.373) | 0.432 (0.384-0.475) | -0.104 (-0.155 to -0.050) | **phone wins, significant** |
+| word-segmental | 0.294 (0.262-0.323) | 0.428 (0.393-0.461) | -0.135 (-0.170 to -0.100) | **phone wins, significant** |
+| sentence-rhythm | 0.055 (-0.015-0.130) | 0.156 (0.079-0.231) | -0.101 (-0.176 to -0.020) | **phone wins, significant** |
+| sentence-intonation | 0.056 (-0.013-0.122) | 0.039 (-0.035-0.111) | 0.017 (-0.060-0.088) | no difference |
+| word-accent | 0.110 (0.058-0.162) | 0.106 (0.053-0.160) | 0.004 (-0.062-0.068) | no difference |
+
+The two categories that most directly parallel speechocean762's
+"pronunciation accuracy" target — sentence- and word-*segmental* — both
+show phone beating BPE with the CI clearly excluding zero. That's the
+load-bearing result: **the 5a-vs-5b ranking flip is a statistically real
+phenomenon, not two noisy point estimates that happened to land on
+opposite sides.** Rhythm flips the same direction, unexpectedly (not the
+categories GOP was expected to track at all — worth a caveat, not a
+celebration: phone-model GOP wasn't designed to predict prosody, so this
+may be a confound rather than genuine rhythm sensitivity). Intonation and
+accent show no significant difference either way, consistent with GOP
+measuring phone/word identity fit rather than prosody.
+(`scripts/eval_umeerj.py`, `results/umeerj_summary_v2.json`.)
+
+**5c CER-proxy (L2-ARCTIC), BPE vs. phone — the Chinese near-tie is
+confirmed as a real (non-significant) tie, not just an underpowered
+guess:** pooled (24-speaker cluster) paired diff = -0.018 (CI -0.050 to
+0.022, includes zero); Chinese alone (the original disentangling test) =
+0.012 (CI -0.075 to 0.094, includes zero). Both confirm the section 5c
+conclusion ("this test can't resolve the question at this effect size")
+was the right call, not an artifact of not having run the numbers.
+**The other five languages show a messier picture that should NOT be
+over-read as five more real per-language effects:** Arabic, Hindi, and
+Korean show paired diffs whose CIs exclude zero, but two of the three
+have a wrong-signed or non-significant *marginal* correlation for at
+least one engine (Korean's BPE r=+0.131 is wrong-signed per the original
+5c caveat about this proxy breaking down for some subpopulations; Hindi's
+own BPE r's CI already includes zero) — a "significant" paired difference
+between two shaky or wrong-signed marginals is not evidence of a real
+engine ranking, it's evidence the underlying char-edit-distance proxy is
+too noisy to trust language-by-language at n=4 speaker-clusters. Spanish's
+paired diff is significant despite *both* marginal CIs including zero, a
+reminder that the paired test controls a different source of noise than
+the marginals and the two can disagree — take it as a caveat on reading
+marginal CIs as sufficient, not as evidence Spanish is special.
+(`scripts/eval_l2arctic.py`, `results/l2arctic_summary_v2.json`.)
+
+**5c phone-level (all 24 L2-ARCTIC speakers), the per-language spread —
+real, but the "middle" languages are not separable from each other:**
+pooled r=0.224 (CI 0.159-0.280, 24 speaker clusters). Per-language,
+95% CIs from a 4-speaker cluster bootstrap (necessarily wide at n=4):
+
+| language | r | 95% CI |
+|---|---|---|
+| Vietnamese | 0.371 | 0.264-0.427 |
+| Arabic | 0.219 | 0.148-0.270 |
+| Mandarin | 0.206 | 0.158-0.236 |
+| Spanish | 0.186 | 0.104-0.251 |
+| Korean | 0.103 | 0.052-0.148 |
+| Hindi | 0.060 | 0.042-0.080 |
+
+A Kruskal-Wallis test on the 24 per-speaker r's grouped by language (the
+correct unit — speaker, not phone) is significant: H=14.75, **p=0.0115**,
+so language does have a real effect on phone-level PCC, not just sampling
+noise dressed up as a spread. But pairwise, only the extremes clearly
+separate: Hindi's CI doesn't overlap Vietnamese's, Arabic's, or
+Mandarin's; the middle cluster — Arabic, Mandarin, Spanish, Korean — has
+heavily overlapping CIs and shouldn't be read as four distinguishable
+points on a ranked list. Vietnamese's CI floor (0.264) sits just above
+Arabic's ceiling (0.270), a near-miss rather than a clean separation.
+Read section 5c's per-language table as "one clear top language, one
+clear bottom language, and a wide indistinguishable middle," not as a
+precise 6-way ranking. (`scripts/eval_l2arctic_phone.py`,
+`results/l2arctic_phone_full.json`.)
+
+---
+
 ## 6. CLI commands summary  (completing the empty section from the old plan)
 
 ```bash

@@ -44,7 +44,7 @@ import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from proscor import align, align_phone
+from proscor import align, align_phone, stats as gopstats
 
 _WORD_RE = re.compile(r"[A-Za-z']+")
 
@@ -126,6 +126,26 @@ def correlations(gop: list, cer: list) -> dict:
     return {"pearson_r": round(float(pr), 4), "spearman_rho": round(float(sr), 4), "n": len(pairs)}
 
 
+def correlations_ci(gop: list, cer: list, speakers: list) -> dict:
+    triples = [(g, c, s) for g, c, s in zip(gop, cer, speakers) if g is not None]
+    if len(triples) < 2:
+        return None
+    gs, cs, ss = zip(*triples)
+    return gopstats.cluster_bootstrap_pearson(gs, cs, ss)
+
+
+def paired_diff_ci(bpe: list, phone: list, cer: list, speakers: list) -> dict:
+    """Restrict to utterances where BOTH engines produced a score, then run
+    the paired speaker-cluster bootstrap on r(bpe,cer) - r(phone,cer) -- the
+    real test for the 5c "near-tie" (PLAN.md section 5c), since comparing
+    two independently-bootstrapped marginal CIs would be a weaker test."""
+    quads = [(b, p, c, s) for b, p, c, s in zip(bpe, phone, cer, speakers) if b is not None and p is not None]
+    if len(quads) < 2:
+        return None
+    bs, ps, cs, ss = zip(*quads)
+    return gopstats.cluster_bootstrap_paired_diff(bs, ps, cs, ss)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--split", default="scripted", choices=["scripted", "spontaneous"])
@@ -150,15 +170,17 @@ def main():
     results = run(rows)
     records = results["records"]
 
-    by_lang = defaultdict(lambda: {"bpe": [], "phone": [], "cer": []})
+    by_lang = defaultdict(lambda: {"bpe": [], "phone": [], "cer": [], "speaker": []})
     by_speaker = defaultdict(lambda: {"bpe": [], "phone": [], "cer": [], "language": None})
     for r in records:
         by_lang[r["language"]]["bpe"].append(r["bpe_gop"])
         by_lang[r["language"]]["phone"].append(r["phone_gop"])
         by_lang[r["language"]]["cer"].append(r["cer"])
+        by_lang[r["language"]]["speaker"].append(r["speaker"])
         by_lang["ALL"]["bpe"].append(r["bpe_gop"])
         by_lang["ALL"]["phone"].append(r["phone_gop"])
         by_lang["ALL"]["cer"].append(r["cer"])
+        by_lang["ALL"]["speaker"].append(r["speaker"])
         by_speaker[r["speaker"]]["bpe"].append(r["bpe_gop"])
         by_speaker[r["speaker"]]["phone"].append(r["phone_gop"])
         by_speaker[r["speaker"]]["cer"].append(r["cer"])
@@ -177,7 +199,10 @@ def main():
             lang: {
                 "n": len(d["cer"]),
                 "bpe_vs_cer": correlations(d["bpe"], d["cer"]),
+                "bpe_vs_cer_speaker_cluster_ci": correlations_ci(d["bpe"], d["cer"], d["speaker"]),
                 "phone_vs_cer": correlations(d["phone"], d["cer"]),
+                "phone_vs_cer_speaker_cluster_ci": correlations_ci(d["phone"], d["cer"], d["speaker"]),
+                "bpe_vs_phone_paired_diff": paired_diff_ci(d["bpe"], d["phone"], d["cer"], d["speaker"]),
             }
             for lang, d in sorted(by_lang.items())
         },

@@ -122,6 +122,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   large, real effect independent of age (all 24 L2-ARCTIC speakers are
   adults), so that explanation can't be dismissed as minor next to
   age/domain match.
+- **Cluster-bootstrap CIs and paired-difference significance tests for
+  every "engine A beats engine B" claim** (`proscor/stats.py`, unit-tested
+  in `tests/test_stats.py`; PLAN.md section 5d). Every prior correlation
+  was a point estimate at the raw item count, which clusters within
+  speakers (naive Fisher-z would be badly wrong) -- added a speaker-level
+  percentile bootstrap (`cluster_bootstrap_pearson`), a paired bootstrap
+  on the difference for two engines scored on the same items
+  (`cluster_bootstrap_paired_diff`, stronger than comparing two marginal
+  CIs since correlated engine errors are preserved per resample), and a
+  Kruskal-Wallis test on per-speaker r's for "does language have a real
+  effect" (`kruskal_by_group`). Reran so762 (`scripts/eval_so762.py`,
+  `eval_so762_phone.py`, and new `scripts/eval_so762_paired.py`),
+  UME-ERJ, and both L2-ARCTIC scripts to capture speaker IDs and compute
+  these. Headline results: the section 5a word-level "BPE beats phone"
+  gap is real (paired diff CI 0.102-0.186, excludes 0) but the
+  utterance-level gap is NOT (CI -0.043 to 0.090) -- that number
+  shouldn't have been read as a real margin. The section 5b UME-ERJ
+  ranking flip (phone beats BPE) is real for both segmental categories
+  (CIs exclude 0), confirming the central cross-corpus finding isn't
+  point-estimate noise. The section 5c Chinese near-tie holds up as a
+  genuine tie (paired diff CI includes 0) rather than an underpowered
+  guess, though the other 5 languages' CER-proxy comparisons are too
+  noisy to read individually (wrong-signed or non-significant marginals
+  in several cases). The section 5c phone-level per-language spread is
+  real overall (Kruskal-Wallis p=0.0115) but only the extremes (Hindi
+  lowest, Vietnamese highest) clearly separate -- the middle four
+  languages have heavily overlapping 4-speaker-cluster CIs and shouldn't
+  be read as a precise 6-way ranking. Also ran the binarized-label check
+  flagged as owed: so762's phone PCC drops from 0.433 (graded label) to
+  0.337 (binarized like L2-ARCTIC's), closing about half the apparent gap
+  to L2-ARCTIC's 0.224 -- real, but a smaller real gap than it looked.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`

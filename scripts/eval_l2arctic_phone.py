@@ -50,7 +50,7 @@ import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from proscor import align_phone
+from proscor import align_phone, stats as gopstats
 
 _WORD_RE = re.compile(r"[a-z']+")
 _ERROR_RE = re.compile(r"^([A-Za-z]+\d?|sil)\s*,\s*(\S+)\s*,\s*([sda])$")
@@ -221,18 +221,35 @@ def main():
     results = run(all_speaker_dirs, limit=args.limit)
     by_speaker = results["by_speaker"]
 
-    by_lang = defaultdict(lambda: {"gop": [], "correct": [], "gop_by_tag": defaultdict(list)})
-    gop_pooled, correct_pooled = [], []
+    by_lang = defaultdict(lambda: {"gop": [], "correct": [], "speaker": [], "gop_by_tag": defaultdict(list)})
+    gop_pooled, correct_pooled, speaker_pooled = [], [], []
     gop_by_tag_pooled = defaultdict(list)
     for spk, d in by_speaker.items():
         lang = LANG_BY_SPEAKER.get(spk, "unknown")
         by_lang[lang]["gop"].extend(d["gop"])
         by_lang[lang]["correct"].extend(d["correct"])
+        by_lang[lang]["speaker"].extend([spk] * len(d["gop"]))
         for tag, vals in d["gop_by_tag"].items():
             by_lang[lang]["gop_by_tag"][tag].extend(vals)
             gop_by_tag_pooled[tag].extend(vals)
         gop_pooled.extend(d["gop"])
         correct_pooled.extend(d["correct"])
+        speaker_pooled.extend([spk] * len(d["gop"]))
+
+    # Phones cluster within speakers (a speaker who mispronounces a sound
+    # produces many correlated error phones), so the naive Fisher-z CI on
+    # n=118,455 phones would be nonsense (~+-0.006). The true unit of
+    # independence is the speaker (24 total, 4 per language) -- see
+    # PLAN.md section 5c for why a speaker-level cluster bootstrap replaces
+    # the point estimates below, and proscor/stats.py for the method.
+    speaker_r = {
+        spk: correlations(d["gop"], d["correct"])["pearson_r"]
+        for spk, d in by_speaker.items()
+    }
+    kw = gopstats.kruskal_by_group(
+        [speaker_r[spk] for spk in speaker_r if speaker_r[spk] is not None],
+        [LANG_BY_SPEAKER.get(spk, "unknown") for spk in speaker_r if speaker_r[spk] is not None],
+    )
 
     summary = {
         "speakers": [p.name for p in all_speaker_dirs],
@@ -244,6 +261,10 @@ def main():
         "pooled": {
             "frac_correct": round(float(np.mean(correct_pooled)), 4) if correct_pooled else None,
             "phone_level_gop_vs_correct": correlations(gop_pooled, correct_pooled),
+            "phone_level_gop_vs_correct_speaker_cluster_ci": (
+                gopstats.cluster_bootstrap_pearson(gop_pooled, correct_pooled, speaker_pooled)
+                if gop_pooled else None
+            ),
             "gop_by_error_tag": tag_breakdown(gop_by_tag_pooled),
         },
         "by_language": {
@@ -251,6 +272,10 @@ def main():
                 "n_speakers": len(SPEAKERS_BY_LANG.get(lang, [])),
                 "frac_correct": round(float(np.mean(d["correct"])), 4) if d["correct"] else None,
                 "phone_level_gop_vs_correct": correlations(d["gop"], d["correct"]),
+                "phone_level_gop_vs_correct_speaker_cluster_ci": (
+                    gopstats.cluster_bootstrap_pearson(d["gop"], d["correct"], d["speaker"])
+                    if d["gop"] else None
+                ),
                 "gop_by_error_tag": tag_breakdown(d["gop_by_tag"]),
             }
             for lang, d in sorted(by_lang.items())
@@ -262,6 +287,12 @@ def main():
                 "phone_level_gop_vs_correct": correlations(d["gop"], d["correct"]),
             }
             for spk, d in sorted(by_speaker.items())
+        },
+        "language_effect_kruskal_wallis": {
+            "note": "H-test on the 24 per-speaker point-biserial r's (4 per "
+                    "language), i.e. speaker is the unit -- not a test on "
+                    "pooled phones.",
+            **kw,
         },
     }
     print(json.dumps(summary, indent=2))

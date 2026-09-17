@@ -48,7 +48,7 @@ import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from proscor import align, align_phone
+from proscor import align, align_phone, stats as gopstats
 
 CATEGORIES = {
     "sentence-segmental": ("sentence", "segmental"),
@@ -115,7 +115,7 @@ def run(data_root: Path, unit: str, category: str, limit: int = None,
     if limit:
         records = records[:limit]
 
-    bpe_gop, phone_gop, human_score, n_raters_list = [], [], [], []
+    bpe_gop, phone_gop, human_score, n_raters_list, speaker_list = [], [], [], [], []
     n_total = len(records)
     n_no_text = n_no_audio = n_bpe_failed = n_phone_failed = 0
     t0 = time.time()
@@ -162,6 +162,7 @@ def run(data_root: Path, unit: str, category: str, limit: int = None,
         phone_gop.append(phone_gop_i)
         human_score.append(score)
         n_raters_list.append(n_raters)
+        speaker_list.append(str(Path(rel_path).parent))  # e.g. "DOS/M01" -- site/speaker
 
         if (i + 1) % progress_every == 0:
             elapsed = time.time() - t0
@@ -170,7 +171,7 @@ def run(data_root: Path, unit: str, category: str, limit: int = None,
 
     return {
         "bpe_gop": bpe_gop, "phone_gop": phone_gop, "human_score": human_score,
-        "n_raters": n_raters_list, "n_total": n_total,
+        "n_raters": n_raters_list, "speaker": speaker_list, "n_total": n_total,
         "n_no_text": n_no_text, "n_no_audio": n_no_audio,
         "n_bpe_failed": n_bpe_failed, "n_phone_failed": n_phone_failed,
         "elapsed_s": time.time() - t0,
@@ -187,6 +188,25 @@ def correlations(x: list, y: list) -> dict:
     pr, _ = pearsonr(xs, ys)
     sr, _ = spearmanr(xs, ys)
     return {"pearson_r": round(float(pr), 4), "spearman_rho": round(float(sr), 4), "n": len(pairs)}
+
+
+def correlations_ci(x: list, y: list, clusters: list) -> dict:
+    triples = [(a, b, c) for a, b, c in zip(x, y, clusters) if a is not None]
+    if len(triples) < 2:
+        return None
+    xs, ys, cs = zip(*triples)
+    return gopstats.cluster_bootstrap_pearson(xs, ys, cs)
+
+
+def paired_diff_ci(x1: list, x2: list, y: list, clusters: list) -> dict:
+    """Restrict to items where BOTH engines produced a score before running
+    the paired bootstrap -- unlike correlations(), which drops Nones
+    per-engine independently and so can compare on different subsets."""
+    triples = [(a, b, c, d) for a, b, c, d in zip(x1, x2, y, clusters) if a is not None and b is not None]
+    if len(triples) < 2:
+        return None
+    x1s, x2s, ys, cs = zip(*triples)
+    return gopstats.cluster_bootstrap_paired_diff(x1s, x2s, ys, cs)
 
 
 def main():
@@ -221,7 +241,17 @@ def main():
             "n_phone_failed": results["n_phone_failed"],
             "elapsed_s": round(results["elapsed_s"], 1),
             "bpe_vs_human": correlations(results["bpe_gop"], results["human_score"]),
+            "bpe_vs_human_speaker_cluster_ci": correlations_ci(
+                results["bpe_gop"], results["human_score"], results["speaker"]),
             "phone_vs_human": correlations(results["phone_gop"], results["human_score"]),
+            "phone_vs_human_speaker_cluster_ci": correlations_ci(
+                results["phone_gop"], results["human_score"], results["speaker"]),
+            # The ranking-flip test (PLAN.md section 5b/5c): whether phone
+            # beating BPE here (or vice versa) survives a paired,
+            # speaker-cluster bootstrap on the SAME items, rather than just
+            # comparing two marginal point estimates.
+            "bpe_vs_phone_paired_diff": paired_diff_ci(
+                results["bpe_gop"], results["phone_gop"], results["human_score"], results["speaker"]),
         }
         print(json.dumps(summary[cat], indent=2), file=sys.stderr)
 
