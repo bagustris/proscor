@@ -1075,12 +1075,15 @@ utterance granularity, only the word-level comparison supports "BPE wins."
 section 5c):** speechocean762's phone label is graded 0-2
 (reconciled PCC 0.433, CI 0.387-0.477); binarizing it the same way
 L2-ARCTIC's label is binary (`accuracy == 2` -> correct) drops the
-correlation to r=0.337 (CI 0.305-0.370). That's roughly half the gap to
-L2-ARCTIC's pooled phone-level r=0.224 (CI 0.159-0.280) closed by label
-granularity alone — real corpora difficulty accounts for less of the
-original 0.433-vs-0.206 gap than it looked like, but a real gap remains
-(0.337's CI floor, 0.305, still sits above 0.224's CI ceiling, 0.280 — not
-overlapping). (`scripts/eval_so762_phone.py`,
+correlation to r=0.337 (CI 0.305-0.370). The like-for-like comparison is
+against L2-ARCTIC's *pooled* binary phone-level r=0.224 (CI 0.159-0.280,
+not the Mandarin-only 0.206 — so762's 125 speakers are a mixed-ability
+pool, not a single-L1 slice, so pooled is the right comparison): original
+gap 0.433-0.224=0.209, binarized gap 0.337-0.224=0.113, so label
+granularity alone closes about 46% of it (0.096 of 0.209) — real corpus
+difficulty accounts for less of the original gap than it looked like, but
+a real gap remains (0.337's CI floor, 0.305, still sits above 0.224's CI
+ceiling, 0.280 — not overlapping). (`scripts/eval_so762_phone.py`,
 `phone_level_reconciled_binarized` in `results/so762_phone_test.json`.)
 
 **5b (UME-ERJ), BPE vs. phone per category — the ranking flip is real for
@@ -1090,7 +1093,7 @@ the categories that matter most:**
 |---|---|---|---|---|
 | sentence-segmental | 0.328 (0.284-0.373) | 0.432 (0.384-0.475) | -0.104 (-0.155 to -0.050) | **phone wins, significant** |
 | word-segmental | 0.294 (0.262-0.323) | 0.428 (0.393-0.461) | -0.135 (-0.170 to -0.100) | **phone wins, significant** |
-| sentence-rhythm | 0.055 (-0.015-0.130) | 0.156 (0.079-0.231) | -0.101 (-0.176 to -0.020) | **phone wins, significant** |
+| sentence-rhythm | 0.055 (-0.015-0.130) | 0.156 (0.079-0.231) | -0.101 (-0.176 to -0.020) | significant, likely a halo effect (see below) |
 | sentence-intonation | 0.056 (-0.013-0.122) | 0.039 (-0.035-0.111) | 0.017 (-0.060-0.088) | no difference |
 | word-accent | 0.110 (0.058-0.162) | 0.106 (0.053-0.160) | 0.004 (-0.062-0.068) | no difference |
 
@@ -1099,12 +1102,14 @@ The two categories that most directly parallel speechocean762's
 show phone beating BPE with the CI clearly excluding zero. That's the
 load-bearing result: **the 5a-vs-5b ranking flip is a statistically real
 phenomenon, not two noisy point estimates that happened to land on
-opposite sides.** Rhythm flips the same direction, unexpectedly (not the
-categories GOP was expected to track at all — worth a caveat, not a
-celebration: phone-model GOP wasn't designed to predict prosody, so this
-may be a confound rather than genuine rhythm sensitivity). Intonation and
-accent show no significant difference either way, consistent with GOP
-measuring phone/word identity fit rather than prosody.
+opposite sides.** Rhythm's significant phone-favoring diff should **not**
+be read as a third confirmation of the same pattern: GOP has no rhythm
+model, so a plausible explanation is that raters' rhythm scores correlate
+with their (unrecorded) segmental impression of the same recording — a
+halo effect on the human rating, not a genuine rhythm-sensitivity
+difference between engines. Intonation and accent show no significant
+difference either way, consistent with GOP measuring phone/word identity
+fit rather than prosody.
 (`scripts/eval_umeerj.py`, `results/umeerj_summary_v2.json`.)
 
 **5c CER-proxy (L2-ARCTIC), BPE vs. phone — the Chinese near-tie is
@@ -1131,9 +1136,9 @@ marginal CIs as sufficient, not as evidence Spanish is special.
 (`scripts/eval_l2arctic.py`, `results/l2arctic_summary_v2.json`.)
 
 **5c phone-level (all 24 L2-ARCTIC speakers), the per-language spread —
-real, but the "middle" languages are not separable from each other:**
-pooled r=0.224 (CI 0.159-0.280, 24 speaker clusters). Per-language,
-95% CIs from a 4-speaker cluster bootstrap (necessarily wide at n=4):
+real overall, but only the extremes separate individually:** pooled
+r=0.224 (CI 0.159-0.280, 24 speaker clusters). Per-language, 95% CIs from
+a 4-speaker cluster bootstrap:
 
 | language | r | 95% CI |
 |---|---|---|
@@ -1144,19 +1149,35 @@ pooled r=0.224 (CI 0.159-0.280, 24 speaker clusters). Per-language,
 | Korean | 0.103 | 0.052-0.148 |
 | Hindi | 0.060 | 0.042-0.080 |
 
-A Kruskal-Wallis test on the 24 per-speaker r's grouped by language (the
-correct unit — speaker, not phone) is significant: H=14.75, **p=0.0115**,
-so language does have a real effect on phone-level PCC, not just sampling
-noise dressed up as a spread. But pairwise, only the extremes clearly
-separate: Hindi's CI doesn't overlap Vietnamese's, Arabic's, or
-Mandarin's; the middle cluster — Arabic, Mandarin, Spanish, Korean — has
-heavily overlapping CIs and shouldn't be read as four distinguishable
-points on a ranked list. Vietnamese's CI floor (0.264) sits just above
-Arabic's ceiling (0.270), a near-miss rather than a clean separation.
-Read section 5c's per-language table as "one clear top language, one
-clear bottom language, and a wide indistinguishable middle," not as a
-precise 6-way ranking. (`scripts/eval_l2arctic_phone.py`,
-`results/l2arctic_phone_full.json`.)
+**Caveat on the table above:** at n=4 clusters, resampling 4 speakers
+with replacement has only 35 distinct multisets, so the bootstrap
+percentiles are coarse — the *width* of each CI is informative (it's
+honestly telling you 4 speakers isn't much), but the exact bounds aren't
+precise to the decimal shown, and a narrower CI (e.g. Mandarin's
+0.158-0.236 vs. Spanish's 0.104-0.251) reflects that those 4 speakers
+happened to be more homogeneous, not that the estimate is more accurate.
+Pairwise CI overlap here is a descriptive summary, not a formal test —
+the same limitation already flagged for the engine-comparison CIs above.
+
+The formal inferential statement is the Kruskal-Wallis test on the 24
+per-speaker r's grouped by language (the correct unit — speaker, not
+phone): significant, H=14.75, **p=0.0115** — language does have a real
+effect on phone-level PCC, not just sampling noise dressed up as a
+spread. Descriptively, only the extremes clearly separate: Hindi's CI
+doesn't overlap Vietnamese's, Arabic's, or Mandarin's; the middle
+cluster — Arabic, Mandarin, Spanish, Korean — has heavily overlapping
+CIs and shouldn't be read as four distinguishable points on a ranked
+list (Vietnamese's CI floor, 0.264, sits just above Arabic's ceiling,
+0.270 — at 35 distinct resamples that's noise-level precision, not a
+confirmed separation). Read section 5c's per-language table as "one
+clear top language, one clear bottom language, and a wide
+indistinguishable middle," not as a precise 6-way ranking. One
+confound this data can't rule out: L2-ARCTIC's annotations came from
+multiple human annotators with no per-speaker annotator ID in the
+release, so per-speaker annotator differences (strictness, sub-vs-del
+labeling habits) may contribute to the between-speaker r variance —
+not separable from L1 here.
+(`scripts/eval_l2arctic_phone.py`, `results/l2arctic_phone_full.json`.)
 
 ---
 
