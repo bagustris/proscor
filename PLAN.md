@@ -982,39 +982,43 @@ by coincidence (Mandarin happens to sit near the middle of the range),
 which would have been easy to over-read as "representative" without
 running the other 20 speakers.
 
-**The per-language spread is not noise — it's explained by the same
-substitution/deletion GOP asymmetry found in the Mandarin-only run,
-generalized and quantified across all 6 L1s.** Every language's
-substitution-error phones have a median GOP of exactly 0.0 (statistically
-indistinguishable from "correct" at the median), while deletions are
-always caught (means -1.0 to -3.6). Since substitutions vastly outnumber
-deletions in every L1 (4:1 to 15:1), each language's phone-level PCC is
-driven almost entirely by *how far the mean* (not median) substitution GOP
-sits from the mean correct-phone GOP — call this the "substitution gap"
-(`correct_mean_gop - substitution_mean_gop`). Ranking languages by this
-gap reproduces the PCC ranking **exactly**, all 6 out of 6:
+**Correction (caught before this went further): the "substitution gap
+ranks languages exactly" framing below was overclaimed — it's largely
+restating the point-biserial formula, not an independent finding.**
+Point-biserial r is literally `(mean_correct - mean_error) * sqrt(p*q) /
+SD`. Substitutions are 80-93% of all errors in every L1 here, so
+`mean_error` is dominated by the substitution mean, and a quick check
+confirms it: recomputing the formula's numerator directly from the
+per-language tag means (weighting substitutions and deletions by count,
+not isolating substitutions alone) reproduces the same 6/6 language
+ordering as the actual Pearson r. Ranking languages by a quantity that's
+algebraically most of the correlation's own numerator is close to
+circular, not a mechanistic discovery — a 1/720 permutation p-value would
+have been the wrong test to reach for here (the null of "random rank
+order" doesn't apply when the two quantities are this entangled).
 
-| language | substitution gap | PCC | n substitutions | n deletions |
-|---|---|---|---|---|
-| Vietnamese | 1.191 | 0.371 | 3,134 | 1,560 |
-| Arabic | 1.046 | 0.219 | 1,655 | 213 |
-| Mandarin | 0.711 | 0.206 | 2,419 | 596 |
-| Spanish | 0.530 | 0.186 | 2,813 | 387 |
-| Korean | 0.441 | 0.103 | 1,506 | 285 |
-| Hindi | 0.149 | 0.060 | 2,342 | 334 |
+**What's still true and worth keeping, stated as arithmetic rather than a
+"prediction that came true":** every language's substitution-error phones
+have a median GOP of exactly 0.0 (statistically indistinguishable from
+"correct" at the median), while deletions are always caught (means -1.0
+to -3.6). Substitution-error *mean* GOP itself varies a lot by L1 — from
+-0.42 (Hindi) to -1.58 (Vietnamese) — while mean correct-phone GOP is
+nearly flat across L1s (-0.28 to -0.40). Since substitutions dominate the
+error population everywhere, that spread in substitution-mean-GOP is
+*where* the L1-driven range in phone-level PCC numerically lives. This
+doesn't independently explain *why* Vietnamese/Arabic substitutions
+produce a larger mean posterior deficit than Hindi/Korean ones do (a
+plausible guess is that their characteristic L1-transfer substitutions —
+consonant-cluster and final-consonant phenomena — swap in a phone
+acoustically further from the target, but that's not verified against a
+phonological-distance metric here) — it just locates the effect instead of
+leaving it as an unexplained per-language spread. The plain range across
+languages is 0.06-0.37; "6x" is technically correct but oversells a small
+absolute range as more dramatic than it is.
 
-This isn't just "more errors -> higher correlation" either: ranking by raw
-error rate (`1 - frac_correct`) does **not** reproduce the PCC order
-(Arabic has the *fewest* errors of all 6 languages, 9.5%, yet the
-second-highest PCC) — it's specifically the *separability* of substitution
-GOP from correct GOP, not error volume, that predicts phone-level PCC.
-Plausible reading: Vietnamese/Arabic L1-transfer substitutions (e.g.
-consonant-cluster and final-consonant phenomena) tend to swap in a phone
-acoustically further from the target than Hindi/Korean substitutions do,
-so the phoneme-CTC model's posterior collapses more; not independently
-verified against a phonological-distance metric here, so this is offered
-as the mechanistic pattern, not a fully closed explanation of *why* it
-holds per L1.
+This also isn't purely an error-rate artifact: ranking by raw error rate
+(`1 - frac_correct`) does **not** reproduce the PCC order (Arabic has the
+*fewest* errors of all 6 languages, 9.5%, yet the second-highest PCC).
 
 **What this does and doesn't add to the 5c disentangling question:**
 this run only exercises the phone model (the BPE model has no phone-level

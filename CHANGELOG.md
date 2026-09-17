@@ -102,15 +102,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zero permanent failures). Refactored `scripts/eval_l2arctic_phone.py`
   to report per-speaker/per-language, not just pooled (regression-tested:
   Mandarin-only subset unchanged at r=0.2061). Pooled PCC = 0.224 (n =
-  118,455 phones), but that hides a 6x per-language spread: Vietnamese
-  0.371, Arabic 0.219, Mandarin 0.206, Spanish 0.186, Korean 0.103, Hindi
-  0.060. The spread is explained, not just observed: every language's
-  substitution errors have median GOP = 0.0 (indistinguishable from
-  correct), so each language's PCC tracks how far the *mean* substitution
-  GOP sits from the mean correct-phone GOP (the "substitution gap") —
-  ranking by that gap reproduces the PCC ranking exactly, 6/6, and it's
-  not just an error-rate artifact (Arabic has the fewest errors of all 6
-  languages yet the second-highest PCC). This run only used the phone
+  118,455 phones), but that hides a per-language range of 0.06-0.37:
+  Vietnamese 0.371, Arabic 0.219, Mandarin 0.206, Spanish 0.186, Korean
+  0.103, Hindi 0.060. **Correction to the first cut of this entry:**
+  "ranking languages by the substitution/correct GOP gap reproduces the
+  PCC ranking exactly, 6/6" was overclaimed as an independent finding --
+  it's largely the point-biserial formula's own numerator (substitutions
+  are 80-93% of errors everywhere, so the "gap" is most of what the
+  correlation is computed from). What's still real: substitution-error
+  mean GOP varies -0.42 (Hindi) to -1.58 (Vietnamese) while mean
+  correct-phone GOP is flat (-0.28 to -0.40) across L1s, and since
+  substitutions dominate every language's errors, that's *where* the
+  per-language PCC range numerically lives -- stated as arithmetic
+  location, not a mechanistic discovery. It's also not just an
+  error-rate artifact (Arabic has the fewest errors of all 6 languages
+  yet the second-highest PCC). This run only used the phone
   model (BPE has no phone output), so it can't repeat the 5b BPE-vs-phone
   ranking-flip test per L1 — but it shows L1-specific error profile is a
   large, real effect independent of age (all 24 L2-ARCTIC speakers are
