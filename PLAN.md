@@ -822,6 +822,7 @@ are not comparable to 5a/5b without accounting for this:**
 | speechocean762 (5a) | word | expert 0-10 score | 0.471 | 0.325 (0.433 reconciled, phone-level) |
 | UME-ERJ (5b) | sentence/word | expert 1-5 mean (5 raters) | 0.29-0.33 | **0.43** |
 | L2-ARCTIC, Chinese (5c) | sentence | char-level CER proxy | -0.107 | -0.119 |
+| L2-ARCTIC, Chinese, phone-level (5c below) | phone | expert binary correct/error | n/a (BPE model has no phone output) | **0.206** |
 
 **Result: a near-tie, not a replication of either prior pattern.**
 speechocean762 (n=15,967 words): |BPE| clearly beats |phone| (0.471 vs.
@@ -874,20 +875,76 @@ wins. The honest conclusion is that this corpus, with this proxy, cannot
 resolve the question at the effect size it would take — not that the
 question is resolved in either hypothesis's favor.
 
-**Not done — the sharper follow-up:** the original TAMU/Kaggle L2-ARCTIC
-distribution's raw TextGrid annotations give expert-aligned
-canonical-phone/perceived-phone/error-tag triples per phone (substitution/
-deletion/addition, ARPABET) — exactly the granularity `phones-accuracy`
-gives on speechocean762, and exactly what `reconcile_phones`-style
-alignment machinery was built to exploit. 260+ of the ~1,200 files needed
-for the 4 Mandarin speakers (`annotation/` + matching `wav/`, 150
-manually-annotated utterances each) are already downloaded under
-`/data/L2-ARCTIC/mandarin/` (fetched via the Kaggle API per-file, since
-whole-dataset downloads hit Google Drive/Kaggle-side rate limits on this
-corpus — resuming needs ~20 more minutes). Finishing that download and
-computing a true phone-level PCC for adult Mandarin-L1, comparable to
-speechocean762's 0.425-0.433, would be a far sharper test than the
-utterance-level CER proxy above. Scoped, not built.
+**The sharper follow-up (implemented): `scripts/eval_l2arctic_phone.py`.**
+The original TAMU/Kaggle L2-ARCTIC distribution's raw `annotation/*.TextGrid`
+files give expert-aligned canonical-phone/perceived-phone/error-tag triples
+per phone (substitution/deletion/addition, ARPABET) — exactly the
+granularity `phones-accuracy` gives on speechocean762. All 1,200 files
+needed for the 4 Mandarin speakers (`annotation/` + matching `wav/`, 150
+manually-annotated utterances each) were fetched via the Kaggle API
+per-file (whole-dataset downloads hit Google Drive/Kaggle-side rate
+limits on this corpus; per-file requests didn't). A from-scratch Praat
+TextGrid parser groups `phones`-tier intervals into their parent `words`-
+tier word by time-overlap, extracts (canonical ARPABET phone, correct/
+substitution/deletion) per phone (additions are excluded — an inserted
+extra sound has no canonical phone to score), force-aligns each word with
+the phoneme-CTC model, and reuses `reconcile_phones` unchanged to map
+espeak's phones back onto the canonical ARPABET sequence.
+
+**A real bug, caught before trusting any number:** the first version's
+error-tag regex (`[A-Za-z]+` for the canonical-phone group) didn't match
+ARPABET's stress digits, so any deletion/substitution of a *vowel*
+(`"IH0, sil, d"` etc. — vowels always carry a stress digit) silently fell
+through to the "bare correct phone" branch, mislabeling the error as
+correct **and** feeding the literal string `"IH0, sil, d"` into
+`reconcile_phones` as if it were a phone symbol. Fixed (`[A-Za-z]+\d?`);
+BWC alone went from r=0.151 (buggy) to r=0.233 (fixed) on the same 150
+utterances — a 54% relative change from one regex character class, exactly
+the kind of silent corruption spot-checking individual reconciled examples
+(the same technique used to validate `reconcile_phones` in section 5a) is
+for.
+
+**Result (all 4 Mandarin speakers, 600 utterances, 19,636 phones scored,
+zero failures — `results/l2arctic_phone_all.json`):**
+
+| metric | value |
+|---|---|
+| phone-level PCC (GOP vs. binary correct/error) | **0.206** (Spearman ρ 0.209) |
+| fraction correct | 0.847 |
+
+Lower than speechocean762's 0.425 (matched-only) / 0.433 (reconciled) —
+about half. Two differences from speechocean762 make the two numbers not
+directly comparable at face value, not just a straight "phone GOP works
+worse here": (a) the label here is **binary** (correct/error) vs.
+speechocean762's 0-2 graded scale, which caps achievable point-biserial
+correlation relative to a graded target; (b) **the error-type mix differs,
+and GOP-lite is asymmetric across error types** — checked directly, not
+assumed: mean GOP is -0.395 for correct phones, **-1.106 for
+substitutions** (n=2,419), **-2.303 for deletions** (n=596) — deletions
+produce a ~3x larger deviation from "correct" than substitutions do, and
+substitutions still show a median GOP of exactly 0.0 (same as "correct"),
+meaning *most* substitutions aren't flagged at all. This is a real,
+checked limitation of naive posterior-deficit GOP: a confidently-wrong
+substitution (the model clearly recognizes *some* phone, just not the
+target one) doesn't create the same posterior collapse a genuine deletion
+(nothing resembling the target phone exists in the audio at all) does.
+L2-ARCTIC's Mandarin-L1 errors are substitution-heavy (2,419 vs. 596, ~4:1
+— consistent with well-documented L1-transfer phone substitutions like
+θ→s, r→l, rather than omissions), which plausibly explains a meaningful
+part of the gap to speechocean762's number, though speechocean762's own
+error-type mix wasn't broken out the same way to confirm this
+quantitatively — stated as the leading explanation, not a proven one.
+
+**What this settles and doesn't:** phone-level GOP-lite is real signal on
+a second corpus (r=0.206, clearly above zero, n=19,636) but weaker here
+than on speechocean762 — and the substitution/deletion breakdown gives a
+mechanistic reason for at least part of that gap, rather than leaving it
+as an unexplained cross-corpus difference. It doesn't change the section
+5c disentangling conclusion (still inconclusive at the utterance level);
+a phone-level UME-ERJ-equivalent (Japanese-L1 adults, phone-level ground
+truth) would be needed to run the same three-way disentangling comparison
+at this sharper granularity, which UME-ERJ's holistic ratings can't
+provide.
 
 ---
 

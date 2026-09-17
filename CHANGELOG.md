@@ -80,9 +80,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   correlations here are 2-3x weaker than the other two corpora (a coarser
   proxy signal: character-edit-distance between canonical/perceived IPA,
   not an expert score), so the honest conclusion is the test is
-  underpowered at this effect size, not that the question is resolved. A
-  sharper phone-level follow-up (using the original TAMU/Kaggle
-  distribution's per-phone TextGrid annotations) is scoped but not built.
+  underpowered at this effect size, not that the question is resolved.
+- **Phone-level L2-ARCTIC (`scripts/eval_l2arctic_phone.py`, PLAN.md
+  section 5c):** the sharper follow-up using the original TAMU/Kaggle
+  distribution's expert-aligned per-phone TextGrid annotations (fetched
+  per-file via the Kaggle API; whole-dataset downloads hit Google
+  Drive/Kaggle rate limits). Phone-level PCC = 0.206 (n=19,636 phones, 4
+  Mandarin speakers, zero failures) — lower than speechocean762's
+  0.425/0.433, partly explained by a checked asymmetry: GOP-lite catches
+  deletions (mean GOP -2.30) much better than substitutions (-1.11, median
+  0.0 — same as correct phones), and L2-ARCTIC's Mandarin-L1 errors are
+  ~4:1 substitution-heavy (classic L1-transfer, e.g. θ→s, r→l). Caught and
+  fixed a real bug first: the error-tag regex didn't match ARPABET stress
+  digits, silently mislabeling vowel deletions/substitutions as correct
+  (BWC alone: r=0.151 buggy -> 0.233 fixed, a 54% change from one regex
+  character class).
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
