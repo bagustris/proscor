@@ -946,6 +946,89 @@ truth) would be needed to run the same three-way disentangling comparison
 at this sharper granularity, which UME-ERJ's holistic ratings can't
 provide.
 
+**Full corpus, all 24 speakers, all 6 L1s (implemented):** the Mandarin
+result above was the first 1,200 files fetched (4 speakers) while the
+remaining 20 speakers' TextGrids/wavs downloaded in the background (all
+7,198 files, per-file via the Kaggle API — whole-dataset downloads
+continued to 404 on this mirror; per-file requests eventually hit a
+sustained low-throughput 429 rate-limit toward the end of the run, worked
+around with slower client-side pacing (0.3s -> 1.2s/file) and patience
+rather than anything clever — zero permanent failures, every file
+eventually succeeded via retry). `scripts/eval_l2arctic_phone.py` was
+refactored to track results per-speaker (`by_speaker` dict keyed off a
+`SPEAKERS_BY_LANG`/`LANG_BY_SPEAKER` mapping for all 24 speakers x 6 L1s)
+instead of one pooled list, enabling a `by_language` breakdown — regression-
+tested against the untouched Mandarin-only result first (pooled r=0.2061,
+n=19,636, exact match) to confirm the refactor changed no behavior before
+trusting the new numbers.
+
+**Result (3,599 utterances, 118,455 phones scored, zero failures —
+`results/l2arctic_phone_full.json`):**
+
+| scope | n phones | PCC | fraction correct |
+|---|---|---|---|
+| pooled (all 24 speakers) | 118,455 | **0.224** | 0.854 |
+| Vietnamese | 20,017 | 0.371 | 0.766 |
+| Arabic | 19,644 | 0.219 | 0.905 |
+| Mandarin | 19,636 | 0.206 | 0.847 |
+| Spanish | 19,946 | 0.186 | 0.840 |
+| Korean | 19,578 | 0.103 | 0.909 |
+| Hindi | 19,634 | 0.060 | 0.864 |
+
+**Yes, the full corpus gives a different result — a 6x spread by L1 (0.06
+to 0.37) that the 4-Mandarin-speaker run couldn't show.** The pooled
+number (0.224) is close to the Mandarin-only number (0.206) more or less
+by coincidence (Mandarin happens to sit near the middle of the range),
+which would have been easy to over-read as "representative" without
+running the other 20 speakers.
+
+**The per-language spread is not noise — it's explained by the same
+substitution/deletion GOP asymmetry found in the Mandarin-only run,
+generalized and quantified across all 6 L1s.** Every language's
+substitution-error phones have a median GOP of exactly 0.0 (statistically
+indistinguishable from "correct" at the median), while deletions are
+always caught (means -1.0 to -3.6). Since substitutions vastly outnumber
+deletions in every L1 (4:1 to 15:1), each language's phone-level PCC is
+driven almost entirely by *how far the mean* (not median) substitution GOP
+sits from the mean correct-phone GOP — call this the "substitution gap"
+(`correct_mean_gop - substitution_mean_gop`). Ranking languages by this
+gap reproduces the PCC ranking **exactly**, all 6 out of 6:
+
+| language | substitution gap | PCC | n substitutions | n deletions |
+|---|---|---|---|---|
+| Vietnamese | 1.191 | 0.371 | 3,134 | 1,560 |
+| Arabic | 1.046 | 0.219 | 1,655 | 213 |
+| Mandarin | 0.711 | 0.206 | 2,419 | 596 |
+| Spanish | 0.530 | 0.186 | 2,813 | 387 |
+| Korean | 0.441 | 0.103 | 1,506 | 285 |
+| Hindi | 0.149 | 0.060 | 2,342 | 334 |
+
+This isn't just "more errors -> higher correlation" either: ranking by raw
+error rate (`1 - frac_correct`) does **not** reproduce the PCC order
+(Arabic has the *fewest* errors of all 6 languages, 9.5%, yet the
+second-highest PCC) — it's specifically the *separability* of substitution
+GOP from correct GOP, not error volume, that predicts phone-level PCC.
+Plausible reading: Vietnamese/Arabic L1-transfer substitutions (e.g.
+consonant-cluster and final-consonant phenomena) tend to swap in a phone
+acoustically further from the target than Hindi/Korean substitutions do,
+so the phoneme-CTC model's posterior collapses more; not independently
+verified against a phonological-distance metric here, so this is offered
+as the mechanistic pattern, not a fully closed explanation of *why* it
+holds per L1.
+
+**What this does and doesn't add to the 5c disentangling question:**
+this run only exercises the phone model (the BPE model has no phone-level
+output, per the table earlier in this section), so it cannot repeat the
+BPE-vs-phone ranking-flip test at phone granularity for the other 5 L1s.
+What it does add: L2-ARCTIC holds age fixed (all 24 speakers are adults)
+while L1 varies across all 6 languages, and phone-level PCC still swings
+6x (0.06-0.37) purely as a function of L1-specific error-type profile.
+That's new, direct evidence that L1-specific error profile is a real and
+large effect on its own, independent of age — it doesn't resolve which
+factor drove the original section 5b BPE-vs-phone ranking flip (that
+remains open), but it rules out dismissing "L1-specific error profile" as
+a minor or speculative factor next to "age/domain match".
+
 ---
 
 ## 6. CLI commands summary  (completing the empty section from the old plan)

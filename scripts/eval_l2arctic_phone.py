@@ -107,10 +107,9 @@ def words_and_phones(tiers: dict) -> list:
     return result
 
 
-def run(speaker_dirs: list, limit: int = None, progress_every: int = 50) -> dict:
-    gop_all, correct_all = [], []
-    gop_by_tag = defaultdict(list)  # "correct" / "s" / "d" -> [gop, ...]
-    n_utt = n_utt_failed = n_words_total = n_words_aligned = 0
+def run(speaker_dirs: list, limit: int = None, progress_every: int = 200) -> dict:
+    by_speaker = defaultdict(lambda: {"gop": [], "correct": [], "gop_by_tag": defaultdict(list)})
+    n_utt = n_utt_failed = n_words_total = 0
     t0 = time.time()
 
     utt_files = []
@@ -140,6 +139,7 @@ def run(speaker_dirs: list, limit: int = None, progress_every: int = 50) -> dict
             n_utt_failed += 1
             continue
 
+        spk_data = by_speaker[speaker]
         for w, pg in zip(words, result["phone_gop"]):
             espeak_phones = [p["phone"] for p in pg if p is not None]
             espeak_gops = [p["gop"] for p in pg if p is not None]
@@ -151,10 +151,9 @@ def run(speaker_dirs: list, limit: int = None, progress_every: int = 50) -> dict
             for g, tag in zip(rec_gops, tags):
                 if g is None:
                     continue
-                n_words_aligned += 1
-                gop_all.append(g)
-                correct_all.append(1 if tag == "correct" else 0)
-                gop_by_tag[tag].append(g)
+                spk_data["gop"].append(g)
+                spk_data["correct"].append(1 if tag == "correct" else 0)
+                spk_data["gop_by_tag"][tag].append(g)
 
         n_utt += 1
         if (i + 1) % progress_every == 0:
@@ -163,10 +162,41 @@ def run(speaker_dirs: list, limit: int = None, progress_every: int = 50) -> dict
                   f"{elapsed / (i + 1) * 1000:.0f}ms/utt)", file=sys.stderr)
 
     return {
-        "gop": gop_all, "correct": correct_all, "gop_by_tag": dict(gop_by_tag),
+        "by_speaker": {spk: {"gop": d["gop"], "correct": d["correct"], "gop_by_tag": dict(d["gop_by_tag"])}
+                       for spk, d in by_speaker.items()},
         "n_utterances": n_utt, "n_utterances_failed": n_utt_failed,
-        "n_words_total": n_words_total, "n_phones_scored": len(gop_all),
+        "n_words_total": n_words_total,
+        "n_phones_scored": sum(len(d["gop"]) for d in by_speaker.values()),
         "elapsed_s": time.time() - t0,
+    }
+
+
+SPEAKERS_BY_LANG = {
+    "Arabic": ["ABA", "YBAA", "SKA", "ZHAA"],
+    "Mandarin": ["BWC", "TXHC", "LXC", "NCC"],
+    "Hindi": ["ASI", "RRBI", "SVBI", "TNI"],
+    "Korean": ["HKK", "YKWK", "HJK", "YDCK"],
+    "Spanish": ["EBVS", "ERMS", "MBMPS", "NJS"],
+    "Vietnamese": ["HQTV", "TLV", "PNV", "THV"],
+}
+LANG_BY_SPEAKER = {spk: lang for lang, spks in SPEAKERS_BY_LANG.items() for spk in spks}
+
+
+def correlations(gop: list, correct: list) -> dict:
+    from scipy.stats import pearsonr, spearmanr
+
+    if len(gop) < 2:
+        return {"pearson_r": None, "spearman_rho": None, "n": len(gop)}
+    pr, _ = pearsonr(gop, correct)
+    sr_, _ = spearmanr(gop, correct)
+    return {"pearson_r": round(float(pr), 4), "spearman_rho": round(float(sr_), 4), "n": len(gop)}
+
+
+def tag_breakdown(gop_by_tag: dict) -> dict:
+    return {
+        tag: {"n": len(vals), "mean_gop": round(float(np.mean(vals)), 3),
+              "median_gop": round(float(np.median(vals)), 3)}
+        for tag, vals in sorted(gop_by_tag.items()) if vals
     }
 
 
@@ -189,15 +219,20 @@ def main():
     print(f"Speakers: {[p.name for p in all_speaker_dirs]}", file=sys.stderr)
 
     results = run(all_speaker_dirs, limit=args.limit)
+    by_speaker = results["by_speaker"]
 
-    from scipy.stats import pearsonr, spearmanr
-
-    gop, correct = results["gop"], results["correct"]
-    if len(gop) >= 2:
-        pr, _ = pearsonr(gop, correct)
-        sr_, _ = spearmanr(gop, correct)
-    else:
-        pr = sr_ = None
+    by_lang = defaultdict(lambda: {"gop": [], "correct": [], "gop_by_tag": defaultdict(list)})
+    gop_pooled, correct_pooled = [], []
+    gop_by_tag_pooled = defaultdict(list)
+    for spk, d in by_speaker.items():
+        lang = LANG_BY_SPEAKER.get(spk, "unknown")
+        by_lang[lang]["gop"].extend(d["gop"])
+        by_lang[lang]["correct"].extend(d["correct"])
+        for tag, vals in d["gop_by_tag"].items():
+            by_lang[lang]["gop_by_tag"][tag].extend(vals)
+            gop_by_tag_pooled[tag].extend(vals)
+        gop_pooled.extend(d["gop"])
+        correct_pooled.extend(d["correct"])
 
     summary = {
         "speakers": [p.name for p in all_speaker_dirs],
@@ -206,16 +241,27 @@ def main():
         "n_words_total": results["n_words_total"],
         "n_phones_scored": results["n_phones_scored"],
         "elapsed_s": round(results["elapsed_s"], 1),
-        "frac_correct": round(float(np.mean(correct)), 4) if correct else None,
-        "phone_level_gop_vs_correct": {
-            "pearson_r": round(float(pr), 4) if pr is not None else None,
-            "spearman_rho": round(float(sr_), 4) if sr_ is not None else None,
-            "n": len(gop),
+        "pooled": {
+            "frac_correct": round(float(np.mean(correct_pooled)), 4) if correct_pooled else None,
+            "phone_level_gop_vs_correct": correlations(gop_pooled, correct_pooled),
+            "gop_by_error_tag": tag_breakdown(gop_by_tag_pooled),
         },
-        "gop_by_error_tag": {
-            tag: {"n": len(vals), "mean_gop": round(float(np.mean(vals)), 3),
-                  "median_gop": round(float(np.median(vals)), 3)}
-            for tag, vals in sorted(results["gop_by_tag"].items())
+        "by_language": {
+            lang: {
+                "n_speakers": len(SPEAKERS_BY_LANG.get(lang, [])),
+                "frac_correct": round(float(np.mean(d["correct"])), 4) if d["correct"] else None,
+                "phone_level_gop_vs_correct": correlations(d["gop"], d["correct"]),
+                "gop_by_error_tag": tag_breakdown(d["gop_by_tag"]),
+            }
+            for lang, d in sorted(by_lang.items())
+        },
+        "by_speaker": {
+            spk: {
+                "language": LANG_BY_SPEAKER.get(spk, "unknown"),
+                "frac_correct": round(float(np.mean(d["correct"])), 4) if d["correct"] else None,
+                "phone_level_gop_vs_correct": correlations(d["gop"], d["correct"]),
+            }
+            for spk, d in sorted(by_speaker.items())
         },
     }
     print(json.dumps(summary, indent=2))

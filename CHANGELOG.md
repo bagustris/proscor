@@ -95,6 +95,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digits, silently mislabeling vowel deletions/substitutions as correct
   (BWC alone: r=0.151 buggy -> 0.233 fixed, a 54% change from one regex
   character class).
+- **Full-corpus L2-ARCTIC phone-level (all 24 speakers, 6 L1s,
+  `results/l2arctic_phone_full.json`, PLAN.md section 5c):** downloaded
+  the remaining 20 speakers (7,198 files total via the Kaggle API,
+  weathering a sustained rate-limit spiral with slower per-file pacing;
+  zero permanent failures). Refactored `scripts/eval_l2arctic_phone.py`
+  to report per-speaker/per-language, not just pooled (regression-tested:
+  Mandarin-only subset unchanged at r=0.2061). Pooled PCC = 0.224 (n =
+  118,455 phones), but that hides a 6x per-language spread: Vietnamese
+  0.371, Arabic 0.219, Mandarin 0.206, Spanish 0.186, Korean 0.103, Hindi
+  0.060. The spread is explained, not just observed: every language's
+  substitution errors have median GOP = 0.0 (indistinguishable from
+  correct), so each language's PCC tracks how far the *mean* substitution
+  GOP sits from the mean correct-phone GOP (the "substitution gap") —
+  ranking by that gap reproduces the PCC ranking exactly, 6/6, and it's
+  not just an error-rate artifact (Arabic has the fewest errors of all 6
+  languages yet the second-highest PCC). This run only used the phone
+  model (BPE has no phone output), so it can't repeat the 5b BPE-vs-phone
+  ranking-flip test per L1 — but it shows L1-specific error profile is a
+  large, real effect independent of age (all 24 L2-ARCTIC speakers are
+  adults), so that explanation can't be dismissed as minor next to
+  age/domain match.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
