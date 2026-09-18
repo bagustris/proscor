@@ -181,6 +181,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reuses the same function. Fixed with an explicit `int(...)` cast;
   regression test in `tests/test_align.py`.
 
+### Removed
+- **Indonesian/Arabic future-language roadmap** (`PLAN.md` section 9, and
+  the corresponding "Scope" note in `README.md`). No code existed for
+  either language; this was planning-only. Project focus stays entirely
+  on English going forward — no other languages are planned.
+
 ## [1.0.1] - 2026-07-14
 
 ### Added

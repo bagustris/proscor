@@ -179,8 +179,7 @@ G2P model's output.
 
 ## Scope
 
-English only for now. `PLAN.md` outlines a path to add Indonesian and Arabic
-without a rewrite — see [section 9](PLAN.md#9-future-todo-multi-language-indonesian-arabic).
+English only. No other languages are planned.
 
 ## Limitations
 
