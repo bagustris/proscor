@@ -183,6 +183,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   age nor non-Mandarin L1 in general, and is now localized to that
   corpus (Japanese-L1 specifically, or its holistic rating scheme /
   recording conditions -- not separable with the corpora on hand).
+- **Segmentation-free GOP** (`proscor/align_phone.py`: `gop_sf`,
+  `align_words_gop_sf`; `--engine sf` in `scripts/eval_so762_phone.py`/
+  `eval_l2arctic_phone.py`; PLAN.md section 5f). Targets the substitution
+  blindness sections 5c/5e found in posterior-deficit GOP (median GOP
+  exactly 0.0 for a substituted phone, every L1) by comparing
+  whole-sequence CTC likelihoods marginalized over every alignment
+  (Cao et al. 2025, arXiv:2507.16838) instead of scoring Viterbi-aligned
+  frames. Computing the substitution term efficiently took two wrong
+  attempts, both caught by brute-force comparison in
+  `tests/test_align_phone.py` before being trusted: a single forward pass
+  with a per-frame log-sum-exp over candidates (overcounted probability
+  2x-40x -- lets adjacent frames implicitly vote for different
+  candidates, not a valid single path) and a local top-K candidate
+  restriction (correct but a weaker, non-comparable metric than the
+  paper's full-vocabulary version). Landed on tracking each candidate's
+  likelihood in an independent "lane" through the wildcard state's
+  self-loop, merged only at entry/exit -- O(T*(S+V)) per phone position,
+  matching the paper's complexity, full ~392-symbol vocabulary. ~1.5-4s
+  per utterance (vs. posterior-deficit's single Viterbi pass), so
+  evaluation-only, not wired into `--engine gop-lite`. Full-corpus
+  results pending.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`

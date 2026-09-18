@@ -1339,6 +1339,77 @@ finding that substitutions are the hard case on this corpus.
 
 ---
 
+### 5f. Segmentation-free GOP: fixing the substitution blindness directly
+
+Sections 5c/5e's substitution/deletion asymmetry (median GOP exactly 0.0
+for a substituted phone, in every L1 tested) has a specific mechanism:
+`align_words_gop`'s posterior-deficit score compares the Viterbi-aligned
+frames' log-prob for the *canonical* phone against the best phone at
+those same frames. With a peaky CTC model, Viterbi still has to place the
+canonical phone's required state somewhere, and it picks the least-bad
+frames available — but if the speaker confidently produced a *different*
+phone throughout that whole stretch, "posterior at the aligned frame" can
+still land close to 0, because the frames Viterbi picked aren't
+necessarily the frames where the wrong phone's dominance is starkest.
+
+**Cao, Fan, Svendsen & Salvi, "Segmentation-free Goodness of Pronunciation"**
+(arXiv:2507.16838, IEEE 2025) sidesteps alignment entirely: compare two
+*whole-sequence* CTC likelihoods, both marginalized over every possible
+alignment via the forward algorithm (no Viterbi step at all) — log
+P(canonical phone sequence) vs. log P(the same sequence with one phone
+replaced by "any phone, or nothing"). `GOP_SF(i) = logP(L_C) - logP(L_SDI)`
+sits at its 0 ceiling when the canonical phone is clearly the only good
+explanation for that stretch of audio, and drops toward a large deficit
+when some alternative (including a confidently-produced *wrong* phone)
+explains it just as well or better — exactly the case posterior-deficit
+GOP structurally can't distinguish from "no strong alternative exists."
+
+**Implementation** (`proscor/align_phone.py`: `gop_sf`, `align_words_gop_sf`,
+drop-in replacements for `align_words_gop`'s per-phone/per-word GOP,
+wired into `scripts/eval_so762_phone.py`/`eval_l2arctic_phone.py` as
+`--engine sf`): computing the substitution term efficiently — "some phone
+from the ~392-symbol vocabulary was produced here," marginalized without
+Viterbi — took two wrong attempts before a correct one, both caught by
+brute-force comparison (`tests/test_align_phone.py`) before being
+trusted, not after:
+1. A single forward pass with the target position's emission replaced by
+   log-sum-exp over every candidate's log-prob *per frame*. Wrong, not
+   just imprecise: CTC's "stay" transition lets a state persist over
+   several frames, and a per-frame log-sum-exp lets frame *t* implicitly
+   vote for one candidate while frame *t+1* (still the same persistence)
+   votes for a different one — not a valid single-candidate path. This
+   overcounted probability mass by 2x-40x on toy examples.
+2. Restricting the candidate set to a small local top-K subset (avoiding
+   attempt 1's bug by never needing the shared per-frame trick). Correct,
+   but a different, weaker metric than the paper's full-vocabulary
+   marginalization, and awkward to compare against their published numbers.
+3. **The correct fix**, kept: candidate identity only matters *while a
+   path is inside the wildcard state's own self-loop*; entry into and
+   exit from that state can be safely marginalized over candidates,
+   because every candidate shares the same predecessor/successor
+   topology (given the precondition that the candidate set excludes the
+   phones immediately flanking that position — a CTC skip-transition
+   subtlety, see the function's docstring). So the self-loop is tracked
+   as one independent running likelihood per candidate (no cross-candidate
+   mixing at any single frame), merged via logsumexp only at entry/exit —
+   the same shared-prefix/shared-suffix factoring a forward-backward
+   derivation would give, in one forward pass. `O(T*(S+V))` per phone
+   position, matching the paper's stated complexity; verified against
+   brute-force enumeration over the *full* (not restricted) candidate set.
+
+**Cost:** ~1.5s/utterance synthetic (T=300 frames, V=392, 40 phones),
+2-4s/utterance measured on real L2-ARCTIC audio — two to three orders of
+magnitude slower than posterior-deficit's single Viterbi pass, but
+affordable for a background full-corpus run (not for interactive
+`--engine gop-lite` use; `align_words_gop_sf` stays evaluation-only,
+same as `align_words_gop`).
+
+**Result: pending** — `--engine sf` full-corpus runs on speechocean762
+and L2-ARCTIC phone-level, compared against `--engine posterior`'s 0.433
+and 0.206/0.224, are queued next.
+
+---
+
 ## 6. CLI commands summary  (completing the empty section from the old plan)
 
 ```bash
