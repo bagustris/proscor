@@ -528,8 +528,11 @@ changed the plan to a staged rollout:
    vocabulary. Likely causes, not disentangled here: (a) domain mismatch —
    this wav2vec2-large model is trained on adult multilingual CommonVoice
    speech via espeak's *automatically generated* (not hand-verified)
-   phoneme labels, while speechocean762 is child L2 English speech, a
-   harder acoustic domain than adult native/fluent L2 speech; (b)
+   phoneme labels, while speechocean762 is L2 English speech from a
+   mixed-age pool (its `age` field runs 6-43, roughly half the speakers
+   under 18 — this was previously described here as "child speech";
+   corrected in section 5e), a harder acoustic domain than adult
+   native/fluent L2 speech; (b)
    word-level aggregation averages over more, noisier phone-level units
    per word than the BPE model averages over subword units, so per-phone
    noise has more opportunities to accumulate. A first version of
@@ -691,7 +694,9 @@ changed the plan to a staged rollout:
 ### 5b. Second-corpus generalization: UME-ERJ
 
 Everything in 5a was validated on one corpus (speechocean762: Mandarin-L1
-children). [UME-ERJ](https://research.nii.ac.jp/src/en/UME-ERJ.html) (NII
+speakers of mixed age, 6-43 — earlier drafts of this section called it a
+children's corpus; see the correction in section 5e).
+[UME-ERJ](https://research.nii.ac.jp/src/en/UME-ERJ.html) (NII
 Speech Resources Consortium) is a second corpus with a different L1
 (Japanese) and, plausibly, a different age range — it's recorded at Japanese
 universities (Tohoku, Kyoto, Toyohashi Tech, Tokyo, Tokyo Tech, Iwate,
@@ -744,21 +749,27 @@ corpora**:
 1. **Domain/acoustic match.** The phoneme-CTC model is trained on adult
    multilingual CommonVoice speech. If UME-ERJ's speakers are adult
    university students (the inferred-not-verified claim above) and
-   speechocean762's are documented children (ages 5-15), the phone model's
-   training distribution is simply closer to UME-ERJ's speakers acoustically.
+   speechocean762's include children (its `age` field runs 6-43, about
+   half the speakers under 18 — this line originally said "documented
+   children (ages 5-15)", which was wrong; see section 5e), the phone
+   model's training distribution is closer to UME-ERJ's speakers
+   acoustically. That speechocean762 is only *half* children weakens this
+   explanation a priori but doesn't kill it.
 2. **L1-specific error profile.** Japanese-accented English has a
    well-documented, specific phoneme-substitution profile (/l/~/r/,
    /θ/~/s/, vowel epenthesis, /v/~/b/) that a genuine phoneme-level model
    may be structurally better positioned to catch than a BPE model routing
-   everything through orthography; Mandarin-accented child speech has a
-   different error profile the BPE model might happen to fit better.
+   everything through orthography; Mandarin-accented (mixed-age) speech has
+   a different error profile the BPE model might happen to fit better.
 
 Both are plausible, both are consistent with the data, and this pair of
 corpora changes L1 *and* (probably) age/register simultaneously, so neither
 can be isolated here. A third corpus that holds one variable fixed while
 changing the other (e.g. a documented-adult, non-Japanese-L1 corpus, or a
 documented-child Japanese-L1 corpus) would be needed to separate them —
-noted as a natural follow-up, not done.
+noted as a natural follow-up, not done. (Section 5c does the adult-Mandarin
+version with L2-ARCTIC; section 5e does a within-corpus version using
+speechocean762's own `age` field, which turned out to span 6-43.)
 
 **Negative controls behave as expected:** rhythm and intonation correlate
 weakly (0.04-0.16) for both engines — GOP is a posterior-deficit measure of
@@ -789,15 +800,17 @@ just the phone-model eval), not just the eval scripts.
 ### 5c. Disentangling age/domain-match from L1-specific error profile: L2-ARCTIC
 
 Section 5b found the BPE-vs-phone-model ranking flips between speechocean762
-(Mandarin-L1 children, BPE wins) and UME-ERJ (Japanese-L1 adults, phone
-wins), with two candidate explanations that two corpora can't separate:
-acoustic/age domain match, or an L1-specific phoneme-substitution profile a
-phone model is structurally better positioned to catch. **The test:**
+(Mandarin-L1, BPE wins — described as "children" when this section was
+written; it's actually mixed-age 6-43, see section 5e) and UME-ERJ
+(Japanese-L1 adults, phone wins), with two candidate explanations that two
+corpora can't separate: acoustic/age domain match, or an L1-specific
+phoneme-substitution profile a phone model is structurally better
+positioned to catch. **The test:**
 [L2-ARCTIC](https://psi.engr.tamu.edu/l2-arctic-corpus/) has **adult
 Mandarin-L1** speakers — same L1 as speechocean762, same age category as
-UME-ERJ — so if adult-Mandarin behaves like child-Mandarin (BPE wins), L1
-dominates; if it behaves like adult-Japanese (phone wins), age/domain
-dominates.
+UME-ERJ — so if adult-Mandarin behaves like speechocean762's Mandarin
+speakers (BPE wins), L1 dominates; if it behaves like adult-Japanese (phone
+wins), age/domain dominates.
 
 **Data:** the [KoelLabs/L2Arctic](https://huggingface.co/datasets/KoelLabs/L2Arctic)
 HF mirror (gated, requires an approved token) rather than the original
@@ -1178,6 +1191,92 @@ release, so per-speaker annotator differences (strictness, sub-vs-del
 labeling habits) may contribute to the between-speaker r variance —
 not separable from L1 here.
 (`scripts/eval_l2arctic_phone.py`, `results/l2arctic_phone_full.json`.)
+
+---
+
+### 5e. Closing the open questions: the age split, clean L2-ARCTIC word labels, and the annotator confound
+
+Section 5d left two questions open: (1) is the 5a-vs-5b BPE/phone ranking
+flip driven by speaker *age* (acoustic domain match) or by *L1* (error
+profile)? and (2) could per-annotator differences be behind L2-ARCTIC's
+per-language spread? This section does what could be done about each
+without new data.
+
+**A correction first: speechocean762 is not a children's corpus.** Every
+earlier section describes it as "Mandarin-L1 children (ages 5-15)." Its
+`age` field actually runs **6-43**: in the `test` split, 64 of 125
+speakers are under 18 (1,280 utterances) and 61 are 18+ (1,220
+utterances); `train` is 58/67. There are no speakers aged 16-18, so 18 is a
+clean cut. The earlier characterization has been amended in place in 5a,
+5b, and 5c with pointers here rather than silently rewritten. It also
+means the cheapest possible age test was sitting in data already on disk.
+
+**(1) Age, tested within one corpus.** `scripts/eval_so762_paired.py` now
+records each speaker's age and runs the paired, speaker-cluster BPE-vs-
+phone comparison separately for the two age groups — same L1, same
+annotators, same 0-10 rating scheme, same recording setup; only age
+varies (`results/so762_paired_age_test.json`; per-item arrays saved
+alongside so re-cuts don't need another inference run):
+
+| group | n words / speakers | BPE r (CI) | phone r (CI) | paired diff (CI) | verdict |
+|---|---|---|---|---|---|
+| under 18 | 7,266 / 64 | 0.409 (0.236-0.528) | 0.285 (0.160-0.396) | +0.124 (0.063-0.169) | **BPE wins** |
+| 18 and over | 8,701 / 61 | 0.514 (0.426-0.576) | 0.343 (0.278-0.397) | +0.171 (0.112-0.224) | **BPE wins** |
+| all (5d, reproduced exactly) | 15,967 / 125 | 0.471 (0.390-0.536) | 0.325 (0.264-0.382) | +0.146 (0.102-0.186) | BPE wins |
+
+BPE beats the phone model in **both** age groups, with the CI excluding
+zero both times — and the adult subset's BPE margin is the *larger* one.
+**Age is not what drives the 5b flip.** If the phone model's advantage on
+UME-ERJ came from its adult-CommonVoice training data matching adult
+speakers acoustically, adult Mandarin speakers in speechocean762 should
+have moved toward the phone model; they moved the other way. (Utterance
+level, secondary: under-18 diff +0.066, CI 0.012-0.112, significant; 18+
+diff +0.029, CI -0.057-0.121, not — consistent with 5d's finding that the
+utterance-level comparison is the weaker one.)
+
+This also reframes section 5c: L2-ARCTIC's adult Mandarin speakers showed
+a "tie" between engines, but speechocean762's adult Mandarin speakers show
+BPE winning clearly — same L1, same age category. The difference between
+those two results is therefore not age; it's either the char-edit-distance
+proxy 5c had to use (already flagged as noisy) or something about the
+corpus itself (read CMU ARCTIC prompts, proficiency range, microphone).
+Part (2) below separates those with clean labels.
+
+**(2) L1, tested among adults with clean labels.** *Pending — filled in
+below when `scripts/eval_l2arctic_word.py` finishes.*
+
+**(3) The annotator confound: checked against every public source, not
+resolvable.** The corpus README (fetched from the Kaggle mirror) documents
+the tag conventions and, for the *spontaneous* "suitcase" subset only, the
+procedure ("two research assistants ... each did half ... then checked the
+other half ... all transcriptions were checked by John Levis"). For the
+3,599 scripted annotations used here it says nothing about who annotated
+which speaker. The Interspeech 2018 paper (Zhao et al., section 3.3) adds
+only: "The annotators (N=3) were PhD students in the Applied Linguistics
+and Technology program at ISU. They were experienced in transcribing speech
+samples of native or non-native English speakers," plus automated
+consistency checks with human fix-ups — no speaker-to-annotator
+assignment, no double-annotated subset, no inter-annotator agreement. (That
+paper covers the initial 10-speaker release; the README credits two more
+people with annotation help for the 24-speaker release.) The TAMU docs
+page repeats the README. So the confound stays a stated limitation; the
+only remaining route is asking the authors for the mapping. Two things
+limit its reach: the paper's claim is "L1 has an effect and the extremes
+differ," not a precise ranking; and 5c already showed error *rate* doesn't
+explain the PCC spread (Arabic: fewest errors, second-highest PCC), which
+argues against a pure annotator-strictness story.
+
+**Two sanity checks recorded while reading the README.** (a) It gives the
+official error totals for the 3,599 annotated utterances — 14,098
+substitutions, 3,420 deletions, 1,092 additions. `eval_l2arctic_phone.py`
+scored 13,869 substitutions and 3,375 deletions (98.4% / 98.7%; the
+remainder are phones `reconcile_phones` couldn't map or words filtered
+for non-alphabetic text), and excludes additions by design — the parser's
+coverage matches the corpus's own bookkeeping. (b) The paper's own
+baseline (section 5, Kaldi GMM GOP with phone-independent thresholding,
+10 speakers) reaches only precision = recall = 0.29 on *substitution*
+detection — an independent, peer-reviewed number agreeing with 5c's
+finding that substitutions are the hard case on this corpus.
 
 ---
 

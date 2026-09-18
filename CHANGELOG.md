@@ -62,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PLAN.md section 5b): validates both GOP-lite engines against
   [UME-ERJ](https://research.nii.ac.jp/src/en/UME-ERJ.html) (Japanese-L1
   English speakers — a different L1 than speechocean762's Mandarin-L1
-  children). No per-phone labels exist in this corpus, so it's a
+  speakers, who are mixed-age 6-43, not children as this entry originally
+  said; see the section 5e entry). No per-phone labels exist in this corpus, so it's a
   word/utterance-level-only check. Segmental correlations hold in the same
   band as speechocean762 (BPE 0.29-0.33, phone model 0.43) across 9,484
   rated items with zero failures — but the word/utterance-level ranking
@@ -153,6 +154,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flagged as owed: so762's phone PCC drops from 0.433 (graded label) to
   0.337 (binarized like L2-ARCTIC's), closing about half the apparent gap
   to L2-ARCTIC's 0.224 -- real, but a smaller real gap than it looked.
+- **Age ruled out as the driver of the BPE-vs-phone ranking flip**
+  (PLAN.md section 5e). Correction first: speechocean762 is mixed-age
+  (`age` 6-43; test split 64 speakers under 18, 61 over), not the
+  children's corpus sections 5a-5c called it -- those passages are
+  amended in place. `scripts/eval_so762_paired.py` now records speaker
+  age, splits the paired speaker-cluster comparison at 18, and saves
+  per-item arrays next to the summary (`<out>.arrays.json`) so re-cuts
+  don't need another inference run. BPE beats the phone model at word
+  level in both groups (under-18 diff +0.124, CI 0.063-0.169; 18+ diff
+  +0.171, CI 0.112-0.224), the adult margin being the larger -- so the
+  phone model's UME-ERJ win is not an adult-acoustics effect. Also
+  checked the L2-ARCTIC annotator confound against the README, the TAMU
+  docs page and the Interspeech'18 paper: 3 ISU PhD-student annotators,
+  no speaker-to-annotator mapping, no double annotation, no agreement
+  figure published -- recorded as a limitation. Parser sanity check
+  against the README's official counts: 98.4% of substitutions and
+  98.7% of deletions recovered.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
