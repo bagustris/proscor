@@ -298,8 +298,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (lv-60 posterior) -> 0.472 (xlsr-53 GOP-SF, stacking both
   improvements, +9% relative); L2-ARCTIC Hindi roughly tripled (0.060
   -> 0.186 posterior), the weakest signal found anywhere in this plan.
-  Paired significance test (mirroring the rest of this plan) queued
-  next to confirm, not yet run.
+  **Paired significance test confirmed it, more broadly than any other
+  comparison in this plan**: significant on all 3 so762 metrics (word
+  diff -0.0375, phone graded -0.0242, phone binary -0.0156, all CIs
+  excluding zero) and 5 of 6 L2-ARCTIC languages (only Mandarin is a
+  near-miss, CI upper bound 0.0001); Hindi's effect (-0.127) is the
+  largest of any comparison anywhere in this plan. Caught one more real
+  bug building the paired test scripts: `_session`'s single-slot cache
+  reloaded a model's full weights from scratch every time the script
+  alternated between the two models (exactly what comparing them
+  requires) -- a ~3s/utterance rate, ~10x too slow. Fixed by caching
+  every `(model_id, use_int8)` `_session` has ever loaded, not just the
+  most recent one (regression test added).
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`

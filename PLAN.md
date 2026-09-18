@@ -1785,15 +1785,38 @@ starting representation is a plausible reason it generalizes better to
 is a plausible mechanism, not a verified one (no probing/ablation of the
 encoder representations done here).
 
-**What's not yet done:** a paired significance test (same items, same
-script, mirroring every other engine comparison in this plan) to confirm
-this is proven, not just observed — queued next, following the same
-pattern section 5f's marginal-vs-paired result already showed matters
-(that gain looked modest-but-overlapping until the paired test settled
-it). Given this effect size is 2-10x larger than the SF-vs-posterior gap
-that *did* prove significant, a null result here would be surprising, but
-"would be surprising" is exactly the kind of claim this plan has learned
-not to state without running the test.
+**Paired significance test (same items, `scripts/eval_so762_model_paired.py`/
+`eval_l2arctic_model_paired.py`, same speaker-cluster bootstrap as every
+other comparison in this plan): confirmed, and more broadly significant
+than the section 5f formula result was.**
+
+| so762 metric | lv60 r | xlsr53 r | paired diff (CI) | significant? |
+|---|---|---|---|---|
+| word-level | 0.325 | 0.362 | -0.0375 (-0.0594 to -0.0150) | **yes** |
+| phone, graded | 0.433 | 0.457 | -0.0242 (-0.0439 to -0.0046) | **yes** |
+| phone, binary | 0.337 | 0.353 | -0.0156 (-0.0274 to -0.0037) | **yes** |
+
+L2-ARCTIC pooled: 0.224 -> 0.266, diff -0.0414 (CI -0.0582 to -0.0286),
+**significant**. Per-language: significant in Arabic (-0.053), Hindi
+(-0.127, the largest effect anywhere in this plan), Korean (-0.036),
+Spanish (-0.010), Vietnamese (-0.062); Mandarin alone is a near-miss
+(-0.021, CI -0.0354 to **0.0001** — the upper bound sits a hair above
+zero). Five of six languages significant is a broader result than
+section 5f's GOP-SF paired test achieved (four of six) — this is now the
+best-evidenced single finding in this whole plan: real (not marginal-CI
+noise), consistent across two independent full corpora, two independent
+scoring formulas, and five of six native languages, from a zero-shot
+model swap with no new data and no training.
+
+Building the two paired scripts caught one more real bug worth recording:
+the first version scored ~3s/utterance instead of the expected sub-second
+rate, traced to `_session`'s cache holding only one model at a time --
+alternating between two models every utterance (exactly what a paired
+comparison does) reloaded xlsr-53's full weights from scratch on every
+single call. Fixed by caching every `(model_id, use_int8)` combination
+`_session` has ever loaded, not just the most recent one (regression test
+in `tests/test_align_phone.py`); this also matters going forward any time
+two models are compared in one script, not just for this test.
 
 ---
 

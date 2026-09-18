@@ -42,9 +42,8 @@ MODEL_REPO = "onnx-community/wav2vec2-lv-60-espeak-cv-ft-ONNX"
 TORCH_MODEL_REPO = "facebook/wav2vec2-xlsr-53-espeak-cv-ft"
 SAMPLE_RATE = 16000
 
-_SESSION = None
-_SESSION_KEY = None  # (model_id, use_int8) for onnx, (model_id, None) for torch
-_BACKEND = None       # "onnx" or "torch"
+_SESSIONS = {}  # (model_id, use_int8_or_None) -> (session, backend, vocab, blank)
+_BACKEND = None       # "onnx" or "torch" -- whichever _SESSIONS entry is currently active
 _TOK2ID = None
 _BLANK = None
 
@@ -60,43 +59,56 @@ def available() -> bool:
 
 
 def _session(model_id: str = None, use_int8: bool = True):
-    global _SESSION, _SESSION_KEY, _BACKEND, _TOK2ID, _BLANK
+    """Loads (or reuses) the session for `model_id`, and makes it the
+    *active* one -- `_BACKEND`/`_TOK2ID`/`_BLANK` always reflect whichever
+    session this call returns, since `_word_phones_and_ids` and friends
+    read those as plain globals rather than taking the session as an
+    argument. Sessions are cached per (model_id, use_int8) in `_SESSIONS`,
+    not just the single most-recently-used one: a caller that alternates
+    between two models within one loop (scripts/eval_*_model_paired.py,
+    comparing them on the same utterances) must not reload either one's
+    weights every call -- an earlier version cached only one slot, so
+    alternating between MODEL_REPO and TORCH_MODEL_REPO per utterance
+    reloaded xlsr-53's full weights from scratch every single utterance
+    (caught by the 3+ second/utterance rate it produced, ~10x the
+    expected combined cost of two already-loaded models)."""
+    global _BACKEND, _TOK2ID, _BLANK
     from huggingface_hub import hf_hub_download
 
     model_id = model_id or MODEL_REPO
     backend = "onnx" if model_id == MODEL_REPO else "torch"
     key = (model_id, use_int8 if backend == "onnx" else None)
-    if _SESSION is not None and _SESSION_KEY == key:
-        return _SESSION
 
-    if backend == "onnx":
-        import onnxruntime as ort
+    if key not in _SESSIONS:
+        if backend == "onnx":
+            import onnxruntime as ort
 
-        fname = "onnx/model_int8.onnx" if use_int8 else "onnx/model.onnx"
-        path = hf_hub_download(model_id, fname)
-        session = ort.InferenceSession(path)
-        vocab_path = hf_hub_download(model_id, "vocab.json")
-        with open(vocab_path, encoding="utf-8") as f:
-            vocab = json.load(f)
-    else:
-        from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2ForCTC
+            fname = "onnx/model_int8.onnx" if use_int8 else "onnx/model.onnx"
+            path = hf_hub_download(model_id, fname)
+            session = ort.InferenceSession(path)
+            vocab_path = hf_hub_download(model_id, "vocab.json")
+            with open(vocab_path, encoding="utf-8") as f:
+                vocab = json.load(f)
+        else:
+            from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2ForCTC
 
-        tok = Wav2Vec2CTCTokenizer.from_pretrained(model_id)
-        model = Wav2Vec2ForCTC.from_pretrained(model_id)
-        model.eval()
-        # The tokenizer's vocab can include a "|" word-delimiter entry the
-        # CTC head was never trained to emit (seen on the xlsr-53 checkpoint:
-        # 393 vocab entries, 392-class output) -- keep only ids the model
-        # actually outputs, or downstream indexing goes out of bounds.
-        vocab = {k: v for k, v in tok.get_vocab().items() if v < model.config.vocab_size}
-        session = model
+            tok = Wav2Vec2CTCTokenizer.from_pretrained(model_id)
+            model = Wav2Vec2ForCTC.from_pretrained(model_id)
+            model.eval()
+            # The tokenizer's vocab can include a "|" word-delimiter entry the
+            # CTC head was never trained to emit (seen on the xlsr-53
+            # checkpoint: 393 vocab entries, 392-class output) -- keep only
+            # ids the model actually outputs, or downstream indexing goes
+            # out of bounds.
+            vocab = {k: v for k, v in tok.get_vocab().items() if v < model.config.vocab_size}
+            session = model
+        _SESSIONS[key] = (session, backend, vocab, vocab["<pad>"])
 
-    _SESSION = session
-    _SESSION_KEY = key
+    session, backend, vocab, blank = _SESSIONS[key]
     _BACKEND = backend
     _TOK2ID = vocab
-    _BLANK = _TOK2ID["<pad>"]  # HF Wav2Vec2CTCTokenizer convention: pad = CTC blank
-    return _SESSION
+    _BLANK = blank  # HF Wav2Vec2CTCTokenizer convention: pad = CTC blank
+    return session
 
 
 def _logprobs(samples: np.ndarray, model_id: str = None, use_int8: bool = True) -> np.ndarray:

@@ -390,8 +390,7 @@ def test_session_selects_onnx_backend_for_default_model_id(monkeypatch):
             def __init__(self, path):
                 calls["onnx"] += 1
 
-    monkeypatch.setattr(align_phone, "_SESSION", None)
-    monkeypatch.setattr(align_phone, "_SESSION_KEY", None)
+    monkeypatch.setattr(align_phone, "_SESSIONS", {})
     monkeypatch.setitem(__import__("sys").modules, "onnxruntime", _FakeOrt)
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download",
@@ -413,8 +412,7 @@ def test_session_torch_backend_filters_tokens_the_model_cannot_output(monkeypatc
     392-class classifier) -- feeding that id into _ctc_viterbi/gop_sf
     indexes the log-prob array out of bounds. _session must drop any
     token whose id is >= the model's own vocab_size."""
-    monkeypatch.setattr(align_phone, "_SESSION", None)
-    monkeypatch.setattr(align_phone, "_SESSION_KEY", None)
+    monkeypatch.setattr(align_phone, "_SESSIONS", {})
 
     fake_vocab = {"<pad>": 0, "a": 1, "b": 2, "|": 3}  # "|" is out of range
     fake_transformers = type("M", (), {
@@ -435,12 +433,17 @@ def test_session_torch_backend_filters_tokens_the_model_cannot_output(monkeypatc
     assert align_phone._BLANK == 0
 
 
-def test_session_reloads_when_model_id_changes(monkeypatch):
-    """Switching model_id must actually reload (not silently keep serving
-    the previously-cached session/vocab) -- the cache-key check has to
-    include model_id, not just use_int8 like the pre-refactor version did."""
-    monkeypatch.setattr(align_phone, "_SESSION", None)
-    monkeypatch.setattr(align_phone, "_SESSION_KEY", None)
+def test_session_caches_every_model_not_just_the_most_recent(monkeypatch):
+    """Regression test for a real bug hit building the model-paired eval
+    scripts: a single-slot cache reloads a model's full weights from
+    scratch every time the caller alternates between two models within
+    one loop (scripts/eval_*_model_paired.py score every utterance with
+    BOTH models to compare them) -- observed as a ~3s/utterance rate on
+    speechocean762, ~10x the expected combined cost of two already-loaded
+    models. `_session` must cache every (model_id, use_int8) it has ever
+    loaded, not just swap a single slot, so switching back to a
+    previously-used model_id is free."""
+    monkeypatch.setattr(align_phone, "_SESSIONS", {})
 
     calls = []
     fake_transformers = type("M", (), {
@@ -455,6 +458,10 @@ def test_session_reloads_when_model_id_changes(monkeypatch):
 
     align_phone._session("repo-a")
     align_phone._session("repo-a")  # same id -> cached, no second load
-    align_phone._session("repo-b")  # different id -> must reload
+    align_phone._session("repo-b")  # different id -> must load
+    align_phone._session("repo-a")  # switching BACK -> must still be cached, not reloaded
+    align_phone._session("repo-b")  # and switching back again -> also still cached
+
+    assert calls == ["repo-a", "repo-b"]  # each repo loaded exactly once, ever
 
     assert calls == ["repo-a", "repo-b"]
