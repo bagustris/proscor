@@ -1550,14 +1550,42 @@ Zhao (L2-ARCTIC, the annotator-confound question from section 5e) — both
 external-contact dependencies with unknown response time, appropriately
 outside what this session can resolve on its own.
 
-**Secondary lead, not pursued:** J-AESOP (Asian English Speech cOrpus
-Project) includes Japanese speakers with corrected forced alignments and
-holistic accentedness/comprehensibility ratings, but no evidence found of
-phone-level error tags — would extend the L1 roster (Thai, Indonesian,
-Korean, etc. alongside Japanese) under one shared methodology, which could
-independently test "is it Japanese specifically" if it ever needs
-revisiting, but doesn't obviously improve on what UME-ERJ already gives
-for the *immediate* question and wasn't investigated further here.
+**Correction to the "secondary lead" call above: J-AESOP is a stronger
+lead than Makino's ERJ Phonetic Corpus, not a weaker one — read the actual
+2025 paper (Yazawa, Konishi & Kondo, *Acoust. Sci. & Tech.* 46(5)), not
+just search-result summaries, before concluding "no phone-level tags."**
+It has real error tags: word-tier **SBT** (substitution, e.g.
+"CLOAK->COAT"), **DLT** (deletion), **INS** (insertion), plus phone-tier
+manual correction marking deleted/inserted phones directly — added by
+seven trained phoneticians on **180 Japanese speakers'** (undergrad/grad
+students, age 18-38) reading of "The North Wind and the Sun" (Task 6_01).
+180 speakers is far more than anything used in this plan so far (4/L1 in
+L2-ARCTIC; UME-ERJ's ~190 speakers have no per-phone tags at all).
+
+**The design has a property none of our other corpora have: the same
+Task 6_01 recordings also carry separate holistic 1-10 ratings**
+(segmental accuracy, prosody, fluency, nativelikeness — the same
+structural categories UME-ERJ uses) from phonetically-trained judges of
+mixed L1 backgrounds. Clean error-tag labels and holistic ratings, on
+*identical* audio, from the same 180 Japanese speakers. If BPE wins by
+the clean-tag test but phone wins by the holistic-rating test on the same
+recordings, that's close to a direct answer to "is the UME-ERJ flip about
+L1 or about rating methodology" — cleaner than anything achievable by
+comparing across different corpora with different audio, as every prior
+test in this plan has had to do.
+
+**Access, the real constraint:** per the paper, "most of the corpus data
+are not yet publicly available... researchers can obtain conditional
+access upon request" — audio and TextGrids need an email to the
+corresponding author (Kakeru Yazawa, U. Tsukuba,
+yazawa.kakeru.gb@u.tsukuba.ac.jp; draft below). The perceptual-rating
+data alone is already public (Zenodo, DOI 10.5281/zenodo.10633636), but
+without matching audio it can't be used for GOP correlation on its own.
+Unlike the Makino resource, this project is active (2025 publication,
+working contact, not a stalled 2012 report at <10% completion), so this
+is now the **lead candidate** among the three external-contact leads —
+worth prioritizing over the Makino email, not alongside it as an
+afterthought.
 
 ---
 

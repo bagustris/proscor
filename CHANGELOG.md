@@ -238,6 +238,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine). A third, previously unconsidered hypothesis for the UME-ERJ
   flip: an acoustic/recording-domain effect on the model's own posterior
   peakiness, independent of L1 or UME-ERJ's holistic rating scale.
+  **Correction:** the J-AESOP corpus was called a weak secondary lead
+  ("no evidence of phone-level error tags") based on search summaries;
+  reading the actual 2025 paper (Yazawa, Konishi & Kondo) found real
+  word-level substitution/deletion/insertion tags on 180 Japanese
+  speakers -- far more speakers than any corpus used in this plan -- plus
+  separate holistic 1-10 ratings on the *same* recordings, which could
+  test the L1-vs-methodology question on identical audio. Now the lead
+  candidate among the external-contact leads (email drafted for the
+  corresponding author); audio/TextGrid access is conditional-on-request,
+  not yet public (the rating data alone is, but isn't independently
+  useful without matching audio).
 - **Checked whether GOP-SF should extend to the BPE model -- no, and two
   alternatives tried didn't help either** (`proscor/align.py`:
   `gop_deletion_term`, `align_words_gop_deletion`; PLAN.md section 5h).
