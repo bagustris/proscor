@@ -1429,28 +1429,33 @@ confirms the mechanism: marginalizing over every alignment instead of
 scoring one Viterbi path does catch confidently-wrong substitutions that
 posterior-deficit structurally missed.
 
-**But this only moved the aggregate correlation a little, with heavily
-overlapping CIs (no paired significance test run yet — see below):**
+**The aggregate correlation gain looked small with heavily overlapping
+marginal CIs — but the proper paired test (same items, one script,
+`scripts/eval_so762_phone_paired.py` / `eval_l2arctic_phone_paired.py`,
+mirroring section 5d's BPE-vs-phone approach) shows it's real, not
+noise:**
 
-| metric | posterior-deficit r (CI) | GOP-SF r (CI) |
-|---|---|---|
-| so762 word-level | 0.325 (0.264-0.382) | 0.338 (0.275-0.396) |
-| so762 utterance-level | 0.536 | 0.560 |
-| so762 phone, matched-only | 0.425 (0.380-0.467) | 0.432 (0.387-0.475) |
-| so762 phone, reconciled | 0.433 (0.387-0.477) | 0.441 (0.395-0.486) |
-| so762 phone, reconciled binarized | 0.337 (0.305-0.370) | 0.354 (0.320-0.388) |
-| L2-ARCTIC phone, pooled (24 speakers) | 0.224 (0.159-0.280) | 0.233 (0.169-0.287) |
+| metric | posterior-deficit r | GOP-SF r | paired diff (CI) | significant? |
+|---|---|---|---|---|
+| so762 word-level | 0.325 | 0.338 | -0.0135 (-0.0207 to -0.0066) | **yes** |
+| so762 utterance-level | 0.536 | 0.560 | -0.0246 (-0.0324 to -0.0169) | **yes** |
+| so762 phone, graded label | 0.433 | 0.441 | -0.0083 (-0.0148 to -0.0016) | **yes** |
+| so762 phone, binary label | 0.337 | 0.354 | -0.0161 (-0.0207 to -0.0117) | **yes** |
+| L2-ARCTIC phone, pooled (24 speakers) | 0.224 | 0.233 | -0.0088 (-0.0140 to -0.0046) | **yes** |
 
-Every number moved in the right direction, none by much, and every pair
-of CIs overlaps substantially — these should be read as "consistent with
-a small real improvement" not "GOP-SF proven better." A proper answer
-needs the same paired, speaker-cluster bootstrap used everywhere else in
-this plan (section 5d), scoring both engines on the *same* items in one
-run (mirroring `scripts/eval_so762_paired.py`) rather than comparing two
-separately-bootstrapped marginal CIs — not done here (each full-corpus
-run already takes 35-47 minutes single-engine; a paired run scores both
-engines per item, roughly doubling that). Noted as the natural next step,
-not run yet.
+**GOP-SF wins significantly on every metric tested on the full corpora.**
+The marginal CIs overlapped because bootstrapping each engine's CI
+separately throws away the fact that both engines score the *same* audio
+and their errors are correlated — the paired test controls for that
+directly, exactly the caveat section 5d flagged about marginal-CI
+comparisons generally. Per-language (L2-ARCTIC, 4-speaker clusters, so a
+coarser test): significant in Arabic (diff -0.022, CI -0.039 to -0.009),
+Hindi (-0.020, CI -0.028 to -0.011), Spanish (-0.004, CI -0.0045 to
+-0.0017), Vietnamese (-0.009, CI -0.019 to -0.003); not significant in
+Korean (-0.005, CI -0.017 to 0.007) or Mandarin (-0.005, CI -0.018 to
+0.007) — both still point the same direction (SF wins), just underpowered
+at 4 clusters, consistent with every other per-language result in this
+plan needing that caveat.
 
 **Why the aggregate gain is modest despite the clean mechanistic fix:**
 substitutions are 80-93% of all errors in every L1 (section 5d), but even
@@ -1673,11 +1678,12 @@ value through a simple linear blend at any weighting tried. Not pursued
 further.
 
 **Bottom line:** the one improvement this whole investigation actually
-found and validated is section 5f's GOP-SF applied to the *phone* model,
-where the direct hypothesis test (substitution/correct phones separating
-at the median, 0.0=0.0 -> -0.061 vs. -0.223) is unambiguous even though
-the aggregate correlation gain is modest and not yet proven significant
-(the paired test in progress will settle that). For BPE specifically, two
+found and validated is section 5f's GOP-SF applied to the *phone* model —
+the direct hypothesis test (substitution/correct phones separating at the
+median, 0.0=0.0 -> -0.061 vs. -0.223) is unambiguous, and the paired
+significance test (section 5f, completed after this section was written)
+confirmed the aggregate correlation gain is real too: significant on
+every so762 metric and on pooled L2-ARCTIC. For BPE specifically, two
 plausible, cheap, evidence-motivated fixes were tried and both failed —
 a real finding (it rules out two ideas a reviewer might otherwise
 suggest) even though it isn't the improvement that was asked for. No

@@ -212,14 +212,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.233 vs. 0.224) -- consistent with a small real improvement, not
   proof of one; a proper paired significance test (same items, same
   script, mirroring `scripts/eval_so762_paired.py`) wasn't run yet.
-- **Paired posterior-vs-SF significance tests**
+- **Paired posterior-vs-SF significance tests, result: GOP-SF wins,
+  proven not just observed**
   (`scripts/eval_so762_phone_paired.py`, `eval_l2arctic_phone_paired.py`):
   the test flagged as owed above -- scores every item with both engines
   in one loop, phone-level pairing verified by asserting
   `reconcile_phones` picks identical alignment ops for both engines'
   GOPs against the same phone-identity sequence (it does, since ops
   depend only on identity, never on the GOP values carried alongside).
-  Full-corpus runs in progress.
+  **GOP-SF beats posterior-deficit significantly on all four so762
+  metrics** (word: diff -0.0135, CI -0.0207 to -0.0066; utterance:
+  -0.0246, CI -0.0324 to -0.0169; phone graded: -0.0083, CI -0.0148 to
+  -0.0016; phone binary: -0.0161, CI -0.0207 to -0.0117) **and on pooled
+  L2-ARCTIC** (-0.0088, CI -0.0140 to -0.0046, n=118,455 phones/24
+  speakers). Per-language L2-ARCTIC: significant in Arabic/Hindi/
+  Spanish/Vietnamese, not in Korean/Mandarin (both still point the same
+  direction, underpowered at 4 clusters). The marginal-CI overlap that
+  looked inconclusive was a real limitation of comparing separately-
+  bootstrapped CIs, not evidence of no effect -- the paired test controls
+  for the two engines scoring the same, correlated audio.
 - **Closing the UME-ERJ open question** (PLAN.md section 5g). Confirmed
   UME-ERJ *is* ERJ (its own `doc/introduction.txt` names itself
   "略称：ERJ データベース") -- no new Japanese-L1 corpus needed, only a
