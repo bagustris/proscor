@@ -1242,8 +1242,67 @@ proxy 5c had to use (already flagged as noisy) or something about the
 corpus itself (read CMU ARCTIC prompts, proficiency range, microphone).
 Part (2) below separates those with clean labels.
 
-**(2) L1, tested among adults with clean labels.** *Pending — filled in
-below when `scripts/eval_l2arctic_word.py` finishes.*
+**(2) L1, tested among adults with clean labels.**
+`scripts/eval_l2arctic_word.py` replaces 5c's char-edit-distance proxy
+with word labels derived from the expert per-phone TextGrid tags (same
+parser as `eval_l2arctic_phone.py`): `frac_correct` = share of a word's
+canonical phones tagged correct (graded; 85.2% of words are 1.0), and
+`any_error` (binary; 39.7% of words have at least one error). Both
+engines score the same 33,980 words from all 24 speakers (3,599
+utterances, zero failures), paired speaker-cluster bootstrap as in 5d
+(`results/l2arctic_word.json`, per-word records in `.arrays.json`).
+Word level vs. `frac_correct` (expected sign positive):
+
+| L1 (4 adult speakers each) | n words | BPE r (CI) | phone r (CI) | paired diff (CI) | verdict |
+|---|---|---|---|---|---|
+| Arabic | 5,661 | 0.142 (0.106-0.174) | 0.074 (0.026-0.104) | +0.068 (0.043-0.095) | BPE wins |
+| Hindi | 5,661 | 0.064 (0.037-0.086) | -0.039 (-0.060 to -0.005) | +0.103 (0.085-0.133) | BPE wins; phone wrong-signed |
+| Korean | 5,618 | 0.069 (0.007-0.155) | -0.006 (-0.047-0.046) | +0.075 (0.050-0.110) | BPE wins; phone ~zero |
+| Mandarin | 5,647 | 0.144 (0.103-0.169) | 0.029 (0.016-0.043) | +0.115 (0.081-0.140) | BPE wins |
+| Spanish | 5,702 | 0.092 (0.001-0.157) | 0.034 (-0.053-0.128) | +0.058 (-0.014-0.103) | BPE leads; diff CI includes 0 (binary label: -0.123, CI -0.134 to -0.105, significant) |
+| Vietnamese | 5,691 | 0.288 (0.195-0.343) | 0.181 (0.065-0.266) | +0.107 (0.057-0.144) | BPE wins |
+| pooled (24 speakers) | 33,980 | 0.169 (0.102-0.223) | 0.067 (0.015-0.119) | +0.102 (0.080-0.117) | **BPE wins** |
+
+Utterance level (mean word GOP vs. mean `frac_correct`, pooled): BPE
+0.302 (CI 0.164-0.387) vs. phone 0.160 (0.018-0.265), diff +0.143 (CI
+0.104-0.181). Absolute correlations are lower than on speechocean762
+because these labels are near-binary (85% of words are exactly 1.0),
+which caps point-biserial-style r; the *comparison* between engines is
+what this test is for.
+
+**BPE beats the phone model in every one of the six adult L1s** (five
+with the CI excluding zero; Spanish's graded-label diff just includes it
+but its binary-label diff doesn't), with the same four-speaker caveat as
+5d's per-language CIs. Two consequences: (a) 5c's Mandarin "tie" was an
+artifact of the char-edit-distance proxy — with clean labels, adult
+Mandarin speakers show BPE ahead by +0.115, matching speechocean762's
+adult Mandarin subset (+0.171) — so 5c's "this test is underpowered"
+conclusion was right for the wrong reason: the *label* was the problem,
+not the sample size. (b) The phone model is close to zero or even
+wrong-signed at word level for Hindi and Korean, the two L1s where its
+*phone*-level PCC was weakest in 5c (0.060 and 0.103): whatever it
+catches per phone doesn't survive aggregation to words there.
+
+**Where this leaves the 5b question.** Putting 5a, 5c, and 5e together:
+BPE beats the phone model on speechocean762 (Mandarin, children *and*
+adults) and on L2-ARCTIC (adults; Arabic, Hindi, Korean, Mandarin,
+Spanish, Vietnamese). The phone model wins only on UME-ERJ (Japanese
+adults). So the flip is **not age** (5e-1) and **not "non-Mandarin L1"
+in general** (5e-2: five non-Mandarin L1s still favor BPE). What's left
+is specific to UME-ERJ: either Japanese-L1 specifically (the narrowest
+form of 5b's "L1-specific error profile" hypothesis — plausible, since
+Japanese-accented English has an unusually systematic substitution
+profile, but note the phone model was *bad* at substitutions on
+L2-ARCTIC), or properties of the corpus itself (holistic 1-5 ratings by
+five native-teacher raters rather than phone-derived labels, recording
+setup, proficiency range). Those two can't be separated with the corpora
+we have; it would take either a second Japanese-L1 corpus with
+pronunciation labels or UME-ERJ-style holistic ratings collected on
+L2-ARCTIC. For the paper, the honest statement is: the BPE model is the
+better zero-shot GOP engine on every corpus with phone-derived or
+per-word expert labels we tested, across seven L1s and both age groups;
+UME-ERJ is the one documented exception, and we can localize it to the
+corpus, not to age or to L1 in general.
 
 **(3) The annotator confound: checked against every public source, not
 resolvable.** The corpus README (fetched from the Kaggle mirror) documents

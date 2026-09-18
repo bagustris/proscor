@@ -171,6 +171,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   figure published -- recorded as a limitation. Parser sanity check
   against the README's official counts: 98.4% of substitutions and
   98.7% of deletions recovered.
+- **L1 ruled out too: clean word-level labels for L2-ARCTIC**
+  (`scripts/eval_l2arctic_word.py`, `results/l2arctic_word.json`,
+  PLAN.md section 5e). Word labels derived from the expert per-phone
+  TextGrid tags replace section 5c's char-edit-distance proxy; both
+  engines score the same 33,980 words from all 24 adult speakers. BPE
+  beats the phone model in all six L1s (pooled diff +0.102, CI
+  0.080-0.117; five of six per-L1 CIs exclude zero), so 5c's Mandarin
+  "tie" was a proxy artifact. Combined with the age split: the phone
+  model wins only on UME-ERJ (Japanese adults) -- the flip is neither
+  age nor non-Mandarin L1 in general, and is now localized to that
+  corpus (Japanese-L1 specifically, or its holistic rating scheme /
+  recording conditions -- not separable with the corpora on hand).
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
