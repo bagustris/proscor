@@ -212,6 +212,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.233 vs. 0.224) -- consistent with a small real improvement, not
   proof of one; a proper paired significance test (same items, same
   script, mirroring `scripts/eval_so762_paired.py`) wasn't run yet.
+- **Paired posterior-vs-SF significance tests**
+  (`scripts/eval_so762_phone_paired.py`, `eval_l2arctic_phone_paired.py`):
+  the test flagged as owed above -- scores every item with both engines
+  in one loop, phone-level pairing verified by asserting
+  `reconcile_phones` picks identical alignment ops for both engines'
+  GOPs against the same phone-identity sequence (it does, since ops
+  depend only on identity, never on the GOP values carried alongside).
+  Full-corpus runs in progress.
+- **Closing the UME-ERJ open question** (PLAN.md section 5g). Confirmed
+  UME-ERJ *is* ERJ (its own `doc/introduction.txt` names itself
+  "略称：ERJ データベース") -- no new Japanese-L1 corpus needed, only a
+  phone-level annotation layer we don't have. Found the companion
+  annotation resource that would supply it (Makino & Aoki 2012, "ERJ
+  Phonetic Corpus") but it's a real risk, not a solid lead: the paper
+  states under 10% of files were completed as of publication, with no
+  later release found and speaker coverage of that subset unstated --
+  an email to ask status is drafted for the researcher to send, not
+  planned around. **New finding along the way**
+  (`scripts/check_gop_peakiness.py`): posterior-deficit GOP's zero-
+  inflation (the substitution-blindness mechanism from 5c/5e/5f) is far
+  less saturated on UME-ERJ audio than on L2-ARCTIC audio, with no
+  correctness labels involved at all -- 55% of UME-ERJ phones pinned at
+  exactly 0.0 vs. 85% for L2-ARCTIC (matched 150-utterance samples, same
+  engine). A third, previously unconsidered hypothesis for the UME-ERJ
+  flip: an acoustic/recording-domain effect on the model's own posterior
+  peakiness, independent of L1 or UME-ERJ's holistic rating scale.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`

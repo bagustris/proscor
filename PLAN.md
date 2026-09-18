@@ -1466,6 +1466,101 @@ phonetically close swaps, e.g. θ→s) rather than a remaining bug.
 
 ---
 
+### 5g. A third hypothesis for the UME-ERJ flip, and where the search for a fourth corpus stands
+
+Section 5e ruled out age (speechocean762's own adult subset still favors
+BPE) and ruled out non-Mandarin L1 in general (BPE wins in all six adult
+L2-ARCTIC L1s with clean labels). That left the UME-ERJ flip localized to
+one corpus, with two candidate explanations that couldn't be separated:
+Japanese-L1-specificity, or something about UME-ERJ's own methodology
+(holistic 1-5 ratings vs. phone-derived labels). Asked to find a way to
+close this, two things came out of it: one clarification that removes a
+false lead, and one new, checked, third hypothesis.
+
+**UME-ERJ *is* ERJ — confirmed directly, not inferred.** `/data/UME-ERJ`'s
+own `doc/introduction.txt` (Shift-JIS; `iconv -f SHIFT_JIS -t UTF-8`)
+states its short name outright: "略称：ERJ データベース" ("Abbreviation:
+ERJ database"), by Minematsu et al., 202 speakers (100M/102F) — matching
+published descriptions of "ERJ" exactly. This means no *new* Japanese-L1
+corpus is needed for the base audio; what's missing is a phone-level
+error-tag annotation layer analogous to L2-ARCTIC's, which the corpus we
+already have doesn't include (only the holistic `lbl/` ratings used in
+5b).
+
+**A companion annotation resource exists but is a real risk, not a
+solid lead.** Takehiko Makino and Rika Aoki (Chuo University / U. Tokyo)
+built exactly the missing layer — the "ERJ Phonetic Corpus": Praat
+TextGrids with manually-transcribed actual phones and a substitution
+tier, added to Penn Phonetics Lab forced alignments of 1,902 of ERJ's
+sentence files (Makino & Aoki, *Research in Language* 10.1, 2012,
+DOI 10.2478/v10015-011-0046-5 — read directly via PDF, not just the
+abstract, since the abstract alone doesn't carry the caveat that matters).
+That caveat: **"fewer than 10% of the files have been completed and the
+corpus-building is still in its initial stage"** as of that 2012 report —
+under ~190 of 1,902 sentence files, transcribed by hand, one paper, no
+later publication or dataset repository found in searches. Speaker
+coverage of that subset isn't stated anywhere found; each ERJ sentence is
+read by ~12 different speakers, so <190 files could span anywhere from a
+handful of speakers to most of the 202 — unknowable without asking. Given
+section 5d/5e's established bar (a 4-speaker/language cluster bootstrap in
+L2-ARCTIC was already flagged as producing "necessarily wide" CIs), this
+resource could easily be *worse* than what we already ruled insufficient,
+not better. Worth one email to ask current status and speaker coverage
+(draft below); not worth planning an analysis around before that answer
+comes back.
+
+**The cheap, on-disk check the advisor suggested surfaced a genuine third
+hypothesis: posterior-deficit GOP behaves structurally differently on
+UME-ERJ audio than on L2-ARCTIC audio, independent of L1 or rating
+methodology.** Ran the *same* posterior-deficit phone model
+(`align_words_gop`) over a matched sample from each corpus (150
+utterances each; L2-ARCTIC: 4 speakers/4,835 phones; UME-ERJ: word-
+segmental items/492 phones) and compared the raw GOP distribution,
+with no correctness filtering (UME-ERJ has no per-phone labels to filter
+by — this compares the *engine's own output distribution*, not accuracy):
+
+| corpus | frac. phones exactly 0.0 | mean | median | frac. < -1 | frac. < -3 |
+|---|---|---|---|---|---|
+| L2-ARCTIC | 0.849 | -0.467 | 0.0 | 0.112 | 0.060 |
+| UME-ERJ (word-segmental) | 0.555 | -1.747 | 0.0 | 0.384 | 0.258 |
+
+L2-ARCTIC's distribution is the familiar one from 5c/5e/5f: heavily
+saturated at the 0.0 ceiling (85% of phones), the exact peaky-CTC pattern
+that causes the substitution blindness. **UME-ERJ's distribution is
+markedly less saturated** — only 55% pinned at 0.0, a mean 3.7x more
+negative, more than 3x the mass below -1 and -3. That's the phone model
+producing far more graded, less-collapsed scores on UME-ERJ audio *before
+any question of correctness enters* — exactly the direction that would
+make posterior-deficit GOP more informative there than on L2-ARCTIC or
+speechocean762, independent of anything about Japanese-L1 error patterns
+or UME-ERJ's holistic rating scale. Candidate causes not distinguished
+here: recording setup (UME-ERJ: Sennheiser HMD25-1 headset mic,
+multi-university academic setup; L2-ARCTIC: Samson C03U desktop mic +
+pop filter), sentence material (TIMIT-derived vs. CMU ARCTIC), or the
+wav2vec2 phone-CTC model's domain response differing by corpus in a way
+that happens to manifest as posterior peakiness. This is a checked
+observation, not a fully closed explanation — but it's a concrete,
+falsifiable third hypothesis the paper didn't have before, sitting
+alongside (not necessarily replacing) L1-specificity.
+
+**Two emails drafted for the researcher to send, not sent from here:**
+one to Takehiko Makino asking current ERJ Phonetic Corpus completion
+status and speaker coverage; one to Ricardo Gutierrez-Osuna / Guanlong
+Zhao (L2-ARCTIC, the annotator-confound question from section 5e) — both
+external-contact dependencies with unknown response time, appropriately
+outside what this session can resolve on its own.
+
+**Secondary lead, not pursued:** J-AESOP (Asian English Speech cOrpus
+Project) includes Japanese speakers with corrected forced alignments and
+holistic accentedness/comprehensibility ratings, but no evidence found of
+phone-level error tags — would extend the L1 roster (Thai, Indonesian,
+Korean, etc. alongside Japanese) under one shared methodology, which could
+independently test "is it Japanese specifically" if it ever needs
+revisiting, but doesn't obviously improve on what UME-ERJ already gives
+for the *immediate* question and wasn't investigated further here.
+
+---
+
 ## 6. CLI commands summary  (completing the empty section from the old plan)
 
 ```bash
