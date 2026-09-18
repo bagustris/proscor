@@ -207,92 +207,128 @@ def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
 # just as well -- including a confidently-produced *wrong* phone, which is
 # exactly the case posterior-deficit GOP misses.
 #
-# Implementation, corrected version: an earlier attempt tried to compute
-# the substitution term in one forward pass by replacing the target
-# position's emission with log-sum-exp over every candidate phone's
-# log-prob at each frame (a "wildcard" state sharing one scalar DP with the
-# rest of the sequence). That's wrong, not just imprecise: whenever the
-# wildcard state is active for more than one frame -- which is the normal
-# case, since forward marginalizes over every possible frame-count
-# allocation -- a per-frame log-sum-exp lets different frames within the
-# SAME span implicitly "vote" for different candidates (mixing candidate
-# c's evidence at frame t with candidate c''s at frame t+1), which is not
-# what "this whole span is candidate c" means. Caught by brute-force
-# comparison in tests/test_align_phone.py: it overcounted probability mass
-# by 2x-40x, not a rounding-level gap. logP(any candidate here) genuinely
-# requires logsumexp_c logP(sequence with c substituted in) -- summing
-# whole-sequence likelihoods per candidate, not per-frame emissions.
+# Implementation: log P(L_SDI)'s substitution term needs, for one phone
+# position, "some candidate phone was produced here" marginalized over the
+# whole (~392-symbol) vocabulary. A first attempt tried a single forward
+# pass with the target position's emission replaced by log-sum-exp over
+# every candidate's log-prob *per frame* -- wrong, not just imprecise:
+# CTC's "stay" transition lets a state persist over several frames, and a
+# per-frame log-sum-exp lets frame t "vote" for one candidate while frame
+# t+1 (still inside the same persistence) votes for a different one, which
+# isn't a valid single-candidate path. Caught by brute-force comparison in
+# tests/test_align_phone.py: it overcounted probability mass 2x-40x on toy
+# examples, not a rounding-level gap. Restricting candidates to a small
+# per-position confusion set (rather than the full vocabulary) was
+# considered and rejected: it would make GOP-SF a different metric than the
+# paper's (which marginalizes over the full vocabulary), undercutting any
+# comparison to their published numbers later.
 #
-# _ctc_loglik_wildcard now does exactly that: one _ctc_loglik call per
-# candidate (correct by construction -- it's the literal definition, and
-# _ctc_loglik is already the well-tested forward algorithm). The cost is
-# O(T*S) per candidate, so gop_sf restricts each position's candidate pool
-# to a small, data-driven confusion set (the canonical phone plus the
-# top-K phones by peak log-prob in a local window around that position)
-# rather than the full ~40-392-symbol vocabulary -- benchmarked at ~1
-# second/utterance at K=10 on a realistic 40-phone utterance (T=300,
-# V=392), which is what makes a full-corpus run tractable. A confidently
-# *wrong* phone -- the exact case this method exists to catch -- has high
-# local posterior by construction, so it lands in the top-K; this doesn't
-# undercut the method's point, it just skips checking phones with no local
-# acoustic support to begin with.
+# The correct fix keeps full-vocabulary marginalization in one pass:
+# candidate identity only matters *while a path is inside the wildcard's
+# own self-loop*; entry into and exit from that state can be marginalized
+# over candidates safely, because (given the precondition below) every
+# candidate shares the same predecessor/successor topology. So the
+# self-loop is tracked as `len(candidate_ids)` separate per-candidate
+# lanes (no cross-lane mixing), and only merged (logsumexp) at entry/exit
+# -- exactly the shared-prefix/shared-suffix factoring a forward-backward
+# derivation would give, without needing a separate backward pass. Cost is
+# O(T*(S+V)) for one phone position (matching the paper's stated
+# complexity), verified against brute-force enumeration over the full
+# candidate set (not a restricted one) in tests/test_align_phone.py.
 
 
 def _ctc_loglik_wildcard(lp: np.ndarray, tokens: list, position: int, blank: int,
                           candidate_ids: np.ndarray) -> float:
     """logP(tokens, with tokens[position] replaced by "any phone in
-    candidate_ids") = logsumexp over one _ctc_loglik call per candidate.
-    Marginalizing a *whole-sequence* likelihood over candidates, not a
-    per-frame emission -- see the module comment above for why the faster
-    per-frame version is unsound."""
+    candidate_ids"), marginalized over which one -- mathematically
+    logsumexp over one _ctc_loglik call per candidate (verified against
+    that brute-force definition in tests/test_align_phone.py), computed
+    here in one pass via per-candidate self-loop lanes that merge only at
+    the wildcard state's entry/exit (see the module comment above for why
+    a naive per-frame merge inside the self-loop is wrong).
+
+    **Precondition, load-bearing for correctness:** `candidate_ids` must
+    not contain `tokens[position - 1]` or `tokens[position + 1]` (the
+    tokens immediately flanking this position), nor `blank`. CTC's skip
+    transition (bypassing the blank between two states) is legal only when
+    those two states carry different labels; excluding neighbor-colliding
+    candidates makes every remaining candidate's identity provably
+    different from both neighbors, so entry/exit legality can be computed
+    once (from the wildcard's sentinel identity) instead of per-candidate.
+    `gop_sf` enforces this."""
     from scipy.special import logsumexp
 
-    lls = [_ctc_loglik(lp, tokens[:position] + [int(c)] + tokens[position + 1:], blank)
-           for c in candidate_ids]
-    return float(logsumexp(lls))
+    ext = []
+    for t in tokens:
+        ext += [blank, t]
+    ext.append(blank)
+    ext = np.array(ext)
+    ws = 2 * position + 1  # wildcard_state; always odd, so ws == 1 iff position == 0
+
+    ext_topo = ext.copy()
+    ext_topo[ws] = -1  # sentinel: != blank, != any real token id
+    S, T = len(ext), lp.shape[0]
+    can_skip = np.zeros(S, dtype=bool)
+    can_skip[2:] = (ext_topo[2:] != blank) & (ext_topo[2:] != ext_topo[:-2])
+
+    ext_idx = ext.copy()
+    ext_idx[ws] = 0  # placeholder column; state ws's emission is always overridden below
+    emit = lp[:, ext_idx]  # (T, S)
+
+    alpha = np.full(S, _NEG)
+    alpha_wc = np.full(len(candidate_ids), _NEG)  # per-candidate lanes, state ws only
+
+    alpha[0] = emit[0, 0]
+    if S > 1:
+        alpha[1] = emit[0, 1]
+    if ws == 1:  # position 0: the path can start directly in the wildcard, no leading blank
+        alpha_wc = lp[0, candidate_ids].astype(np.float64)
+        alpha[1] = logsumexp(alpha_wc)
+
+    for t in range(1, T):
+        stay = alpha
+        step = np.concatenate(([_NEG], alpha[:-1]))
+        skip = np.where(can_skip, np.concatenate(([_NEG, _NEG], alpha[:-2])), _NEG)
+        new_alpha = np.logaddexp(np.logaddexp(stay, step), skip) + emit[t]
+
+        entry = np.logaddexp(step[ws], skip[ws])  # scalar: mass entering the wildcard this frame
+        alpha_wc = np.logaddexp(alpha_wc, entry) + lp[t, candidate_ids]  # per-candidate, no mixing
+        new_alpha[ws] = logsumexp(alpha_wc)  # merge only here, at exit
+
+        alpha = new_alpha
+
+    return float(np.logaddexp(alpha[-1], alpha[-2] if S > 1 else _NEG))
 
 
-def _local_candidates(lp: np.ndarray, tokens: list, position: int, blank: int,
-                       top_k: int = 10, pad_frac: float = 0.5) -> np.ndarray:
-    """The canonical phone at `position` plus the `top_k` phones with the
-    highest peak log-prob in a local window around it -- a bounded,
-    data-driven confusion set for `_ctc_loglik_wildcard`'s candidate_ids.
-    The window is `tokens`' position mapped proportionally onto `lp`'s T
-    frames (tokens are ~evenly spaced in time on average), padded by
-    `pad_frac` of one token's average width on each side so a phone whose
-    true span drifted from the proportional estimate is still covered."""
-    T, N = lp.shape[0], len(tokens)
-    width = max(T / max(N, 1), 1.0)
-    lo = max(0, int(position * width - pad_frac * width))
-    hi = min(T, int((position + 1) * width + pad_frac * width) + 1)
-    window = lp[lo:hi]  # (w, V)
-    peak = window.max(axis=0)  # (V,) -- this phone's best frame in the window
-    peak = peak.copy()
-    peak[blank] = -np.inf
-    order = np.argsort(peak)[::-1]
-    top = [int(c) for c in order[:top_k] if peak[c] > -np.inf]
-    return np.array(sorted(set(top) | {tokens[position]}))
-
-
-def gop_sf(lp: np.ndarray, tokens: list, blank: int, vocab_size: int,
-           top_k: int = 10) -> list:
+def gop_sf(lp: np.ndarray, tokens: list, blank: int, vocab_size: int) -> list:
     """Segmentation-free GOP (Cao et al. 2025, GOP-SF-SD variant) for every
     position in `tokens`, forced through `lp`'s CTC posteriors with no
     alignment/segmentation step. Returns one float per token (or None for
     every position if the audio can't even fit the canonical sequence).
     `tokens` should be the *whole utterance's* flat phone-id sequence (not
     one word in isolation), so surrounding-word context is available the
-    same way `align_words_gop`'s Viterbi pass already uses it. `vocab_size`
-    is accepted for API stability but unused now that the substitution
-    candidate pool comes from `_local_candidates` rather than the full
-    vocabulary -- see the module comment above."""
+    same way `align_words_gop`'s Viterbi pass already uses it.
+
+    Known narrow edge case, not fixed: at a position whose canonical phone
+    equals an immediately adjacent phone (rare -- needs the same phone to
+    repeat with no phone between, e.g. across a word boundary like "big
+    gate"), the candidate set excludes that value too (see
+    `_ctc_loglik_wildcard`'s precondition), so the wildcard can't
+    reconstruct the canonical path exactly at that one position and the
+    `<= 0` guarantee can (rarely) be violated there. Not observed to matter
+    in practice; flagged rather than silently accepted."""
     canonical_ll = _ctc_loglik(lp, tokens, blank)
     if canonical_ll <= _NEG / 2:
         return [None] * len(tokens)
 
     scores = []
     for i in range(len(tokens)):
-        candidate_ids = _local_candidates(lp, tokens, i, blank, top_k=top_k)
+        exclude = {blank}
+        if i > 0:
+            exclude.add(tokens[i - 1])
+        if i + 1 < len(tokens):
+            exclude.add(tokens[i + 1])
+        candidate_ids = np.array([c for c in range(vocab_size) if c not in exclude])
         sub_ll = _ctc_loglik_wildcard(lp, tokens, i, blank, candidate_ids)
         del_tokens = tokens[:i] + tokens[i + 1:]
         del_ll = _ctc_loglik(lp, del_tokens, blank) if del_tokens else _NEG

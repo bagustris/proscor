@@ -107,7 +107,8 @@ def words_and_phones(tiers: dict) -> list:
     return result
 
 
-def run(speaker_dirs: list, limit: int = None, progress_every: int = 200) -> dict:
+def run(speaker_dirs: list, limit: int = None, progress_every: int = 200, engine: str = "posterior") -> dict:
+    align_fn = align_phone.align_words_gop if engine == "posterior" else align_phone.align_words_gop_sf
     by_speaker = defaultdict(lambda: {"gop": [], "correct": [], "gop_by_tag": defaultdict(list)})
     n_utt = n_utt_failed = n_words_total = 0
     t0 = time.time()
@@ -133,7 +134,7 @@ def run(speaker_dirs: list, limit: int = None, progress_every: int = 200) -> dic
 
         samples, sr = sf.read(str(wav_path), dtype="float32")
         try:
-            result = align_phone.align_words_gop(samples, [w["text"].lower() for w in words], sr=sr)
+            result = align_fn(samples, [w["text"].lower() for w in words], sr=sr)
         except Exception as e:
             print(f"  [warn] {speaker}/{ann_path.name} failed: {e}", file=sys.stderr)
             n_utt_failed += 1
@@ -205,6 +206,9 @@ def main():
     ap.add_argument("--data-root", default="/data/L2-ARCTIC/mandarin")
     ap.add_argument("--speakers", nargs="+", default=None, help="default: all speakers found under --data-root")
     ap.add_argument("--limit", type=int, default=None, help="limit utterances (across all speakers combined)")
+    ap.add_argument("--engine", default="posterior", choices=["posterior", "sf"],
+                     help="posterior = Viterbi posterior-deficit (default); "
+                          "sf = segmentation-free (PLAN.md section 5f)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -218,7 +222,7 @@ def main():
         all_speaker_dirs = [p for p in all_speaker_dirs if p.name in args.speakers]
     print(f"Speakers: {[p.name for p in all_speaker_dirs]}", file=sys.stderr)
 
-    results = run(all_speaker_dirs, limit=args.limit)
+    results = run(all_speaker_dirs, limit=args.limit, engine=args.engine)
     by_speaker = results["by_speaker"]
 
     by_lang = defaultdict(lambda: {"gop": [], "correct": [], "speaker": [], "gop_by_tag": defaultdict(list)})
@@ -252,6 +256,7 @@ def main():
     )
 
     summary = {
+        "engine": args.engine,
         "speakers": [p.name for p in all_speaker_dirs],
         "n_utterances": results["n_utterances"],
         "n_utterances_failed": results["n_utterances_failed"],

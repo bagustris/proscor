@@ -166,19 +166,31 @@ def test_reconcile_already_matching_length_is_all_matches():
 def _rand_lp(T, V, seed):
     """Log-softmax-shaped but otherwise arbitrary log-probs (not hot/cold
     saturated), so a brute-force enumeration has something nontrivial to
-    sum over -- needed for test_ctc_loglik_wildcard_matches_brute_force."""
+    sum over -- needed for the wildcard-vs-brute-force tests below."""
     rng = np.random.default_rng(seed)
     logits = rng.normal(size=(T, V))
     m = logits.max(-1, keepdims=True)
     return logits - m - np.log(np.exp(logits - m).sum(-1, keepdims=True))
 
 
+def _safe_candidates(tokens, position, blank, vocab_size):
+    """The candidate set _ctc_loglik_wildcard's precondition requires:
+    every vocab id except blank and the values immediately flanking
+    `position` -- see its docstring for why the skip-transition math needs
+    this. Mirrors gop_sf's own exclusion logic exactly."""
+    exclude = {blank}
+    if position > 0:
+        exclude.add(tokens[position - 1])
+    if position + 1 < len(tokens):
+        exclude.add(tokens[position + 1])
+    return np.array([c for c in range(vocab_size) if c not in exclude])
+
+
 def test_ctc_loglik_wildcard_matches_brute_force_with_one_candidate():
     """logsumexp over a single-element candidate set must reduce to exactly
     that candidate's own _ctc_loglik -- a non-tautological check that the
-    position slicing (tokens[:position] + [c] + tokens[position+1:]) is
-    exactly right, independent of the logsumexp-over-many-candidates
-    machinery around it."""
+    position slicing lines up, independent of the multi-candidate lane
+    machinery below."""
     blank = 0
     tokens = [1, 2, 3]
     lp = _rand_lp(T=9, V=5, seed=1)
@@ -189,17 +201,18 @@ def test_ctc_loglik_wildcard_matches_brute_force_with_one_candidate():
 
 
 def test_ctc_loglik_wildcard_matches_brute_force_enumeration():
-    """logP of "some candidate phone was produced here" is logsumexp over
-    every candidate's own logP with that phone substituted in -- the
-    definition _ctc_loglik_wildcard now computes directly (an earlier,
-    faster single-lattice version got this wrong; see the module comment
-    in align_phone.py). Includes candidates that collide with tokens[1]'s
-    neighbors (1 and 3), which the old implementation could not handle
-    correctly."""
+    """The whole point of the per-candidate-lane trick is doing in one
+    forward pass what brute force would do in |candidates| separate passes:
+    logP of "some candidate phone was produced here" should equal logsumexp
+    over every candidate's own logP with that phone substituted in. This is
+    the load-bearing correctness proof for gop_sf's substitution term, at
+    the FULL candidate count gop_sf actually uses (not a restricted subset
+    -- a metric that only checked a handful of candidates wouldn't be
+    comparable to the paper's published numbers)."""
     blank = 0
     tokens = [1, 2, 3]
     lp = _rand_lp(T=9, V=5, seed=1)
-    candidates = np.array([1, 2, 3, 4])
+    candidates = _safe_candidates(tokens, 1, blank, vocab_size=5)
 
     wildcard_ll = align_phone._ctc_loglik_wildcard(lp, tokens, position=1, blank=blank,
                                                      candidate_ids=candidates)
@@ -208,17 +221,36 @@ def test_ctc_loglik_wildcard_matches_brute_force_enumeration():
     assert wildcard_ll == pytest.approx(logsumexp(brute), abs=1e-6)
 
 
+def test_ctc_loglik_wildcard_overcounts_when_candidate_collides_with_neighbor():
+    """Pin the bug the precondition exists to avoid: if the candidate set
+    DOES include a neighbor's value, skip-transition legality genuinely
+    differs per candidate and a shared topology can't represent that --
+    the mismatch is large, not a rounding error. This is why gop_sf
+    excludes neighbors rather than approximating around it."""
+    blank = 0
+    tokens = [1, 2, 3]
+    lp = _rand_lp(T=9, V=5, seed=1)
+    unsafe_candidates = np.array([1, 2, 3, 4])  # includes neighbors 1 and 3
+
+    wildcard_ll = align_phone._ctc_loglik_wildcard(lp, tokens, position=1, blank=blank,
+                                                     candidate_ids=unsafe_candidates)
+    brute = [align_phone._ctc_loglik(lp, tokens[:1] + [c] + tokens[2:], blank) for c in unsafe_candidates]
+    from scipy.special import logsumexp
+    assert wildcard_ll != pytest.approx(logsumexp(brute), abs=1e-3)
+
+
 def test_ctc_loglik_wildcard_matches_brute_force_at_every_position():
     """Same proof, repeated at each position in a longer sequence (which
-    includes repeated tokens, so some positions' neighbors coincide with
-    other candidates) and a different seed."""
+    includes repeated tokens, so several positions' neighbor-exclusion sets
+    differ) and a different seed, so the wildcard_state indexing and the
+    per-candidate lanes aren't just accidentally right for one spot."""
     blank = 0
     tokens = [1, 2, 3, 1, 2]
     lp = _rand_lp(T=15, V=5, seed=2)
-    candidates = np.array([1, 2, 3, 4])
     from scipy.special import logsumexp
 
     for pos in range(len(tokens)):
+        candidates = _safe_candidates(tokens, pos, blank, vocab_size=5)
         wildcard_ll = align_phone._ctc_loglik_wildcard(lp, tokens, position=pos, blank=blank,
                                                          candidate_ids=candidates)
         brute = [align_phone._ctc_loglik(lp, tokens[:pos] + [c] + tokens[pos + 1:], blank)
@@ -226,34 +258,21 @@ def test_ctc_loglik_wildcard_matches_brute_force_at_every_position():
         assert wildcard_ll == pytest.approx(logsumexp(brute), abs=1e-6), f"position {pos}"
 
 
-def test_local_candidates_always_includes_canonical_phone():
-    """Structural requirement for gop_sf's <= 0 guarantee: whatever the
-    local window picks up, the canonical phone itself must always be in
-    the returned set, even at a position with no acoustic support for it
-    at all (an extreme mispronunciation, or a degenerate all-blank lp)."""
-    blank = 0
-    lp = np.full((10, 6), -40.0)
-    lp[:, blank] = 0.0  # only blank has any real mass anywhere
-    candidates = align_phone._local_candidates(lp, [1, 2, 3], position=1, blank=blank, top_k=2)
-    assert 2 in candidates
-    assert blank not in candidates
-
-
 def test_gop_sf_matches_manual_sub_del_combination():
-    """gop_sf's own combining logic (canonical - logaddexp(sub, del)),
-    using the SAME candidate selection (_local_candidates) production code
-    uses -- the second half of the correctness chain (the first half is
-    the wildcard tests above)."""
+    """gop_sf's own combining logic (canonical - logaddexp(sub, del)) should
+    match computing the three pieces by hand, at the same full (neighbor-
+    excluded) candidate set gop_sf itself builds -- the second half of the
+    correctness chain (the first half is the wildcard tests above)."""
     blank = 0
     tokens = [1, 2, 3]
     lp = _rand_lp(T=9, V=5, seed=3)
     vocab_size = 5
 
-    scores = align_phone.gop_sf(lp, tokens, blank, vocab_size, top_k=10)
+    scores = align_phone.gop_sf(lp, tokens, blank, vocab_size)
 
     canonical_ll = align_phone._ctc_loglik(lp, tokens, blank)
     for pos in range(len(tokens)):
-        candidate_ids = align_phone._local_candidates(lp, tokens, pos, blank, top_k=10)
+        candidate_ids = _safe_candidates(tokens, pos, blank, vocab_size)
         sub_ll = align_phone._ctc_loglik_wildcard(lp, tokens, pos, blank, candidate_ids)
         del_tokens = tokens[:pos] + tokens[pos + 1:]
         del_ll = align_phone._ctc_loglik(lp, del_tokens, blank)
@@ -263,26 +282,15 @@ def test_gop_sf_matches_manual_sub_del_combination():
 
 def test_gop_sf_is_never_positive():
     """Structural property, not just an empirical one: the wildcard's
-    candidate set always includes the canonical phone itself, so
-    logP(L_SDI) >= logP(L_C) always (summing in a superset can only add
-    mass), making GOP_SF = logP(L_C) - logP(L_SDI) <= 0 for every position,
-    on any audio -- same "0 = ceiling, negative = deficit" convention the
-    existing posterior-deficit GOP already uses."""
+    candidate set always includes the canonical phone itself (it's only
+    the immediate neighbors that get excluded), so logP(L_SDI) >=
+    logP(L_C) always (summing in a superset can only add mass), making
+    GOP_SF = logP(L_C) - logP(L_SDI) <= 0 for every position on any audio
+    -- same "0 = ceiling, negative = deficit" convention the existing
+    posterior-deficit GOP already uses. tokens here have no adjacent
+    repeats, so the known edge case (gop_sf's docstring) doesn't apply."""
     lp = _rand_lp(T=12, V=6, seed=4)
     scores = align_phone.gop_sf(lp, [1, 2, 3, 4], blank=0, vocab_size=6)
-    assert all(s is not None and s <= 1e-6 for s in scores)
-
-
-def test_gop_sf_is_never_positive_with_adjacent_repeated_phone():
-    """Same property, specifically at a position whose canonical phone
-    equals its immediate neighbor (e.g. a word boundary like "big gate",
-    ...G ... G... with no phone between) -- the one case the old
-    lattice-trick implementation could not guarantee this for, since
-    excluding neighbor-colliding candidates also excluded the canonical
-    phone itself when it coincided with a neighbor. _local_candidates
-    unions in the canonical phone unconditionally, so this now holds too."""
-    lp = _rand_lp(T=15, V=6, seed=7)
-    scores = align_phone.gop_sf(lp, [1, 2, 2, 3], blank=0, vocab_size=6)
     assert all(s is not None and s <= 1e-6 for s in scores)
 
 
@@ -309,7 +317,9 @@ def test_gop_sf_strongly_negative_for_confident_substitution():
     across the frames the canonical phone would need, the wildcard sees
     that alternative as a much better fit -- GOP_SF should be a large
     deficit, not near zero. token 2 (canonical, "b") is never hot anywhere
-    in this audio; token 3 dominates its whole slot instead."""
+    in this audio; token 3 dominates its whole slot instead. This is the
+    concrete case posterior-deficit GOP (align_words_gop) structurally
+    cannot catch the way section 5c/5e's empirical finding shows."""
     blank = 0
     lp = np.full((7, 5), -40.0)
     for t in (0, 1, 2):

@@ -66,7 +66,8 @@ def load_split(split: str):
     return pq.read_table(path).to_pylist()
 
 
-def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
+def run(rows: list, use_int8: bool = True, progress_every: int = 200, engine: str = "posterior") -> dict:
+    align_fn = align_phone.align_words_gop if engine == "posterior" else align_phone.align_words_gop_sf
     word_gop, word_acc, word_speaker = [], [], []
     utt_gop_mean, utt_acc, utt_total, utt_speaker = [], [], [], []
     phone_gop_matched, phone_acc_matched, phone_speaker_matched = [], [], []
@@ -84,7 +85,7 @@ def run(rows: list, use_int8: bool = True, progress_every: int = 200) -> dict:
         n_words_total += len(words)
         speaker = row["speaker"]
         try:
-            result = align_phone.align_words_gop(samples, words, sr=sr, use_int8=use_int8)
+            result = align_fn(samples, words, sr=sr, use_int8=use_int8)
         except Exception as e:
             print(f"  [warn] utt {i} ({row['text']!r}) failed: {e}", file=sys.stderr)
             continue
@@ -177,6 +178,9 @@ def main():
     ap.add_argument("--split", default="test", choices=["test", "train"])
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--fp32", action="store_true")
+    ap.add_argument("--engine", default="posterior", choices=["posterior", "sf"],
+                     help="posterior = Viterbi posterior-deficit (align_words_gop, default); "
+                          "sf = segmentation-free (align_words_gop_sf, PLAN.md section 5f)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -198,7 +202,7 @@ def main():
     print(f"Evaluating {len(rows)} utterances (phone-level model, "
           f"{'int8' if not args.fp32 else 'fp32'}) ...", file=sys.stderr)
 
-    results = run(rows, use_int8=not args.fp32)
+    results = run(rows, use_int8=not args.fp32, engine=args.engine)
 
     word_corr = correlations(results["word_gop"], results["word_acc"])
     utt_corr_acc = correlations(results["utt_gop_mean"], results["utt_acc"])
@@ -242,6 +246,7 @@ def main():
 
     summary = {
         "split": args.split,
+        "engine": args.engine,
         "precision": "fp32" if args.fp32 else "int8",
         "n_utterances": results["n_utterances"],
         "n_words_total": results["n_words_total"],
