@@ -238,6 +238,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine). A third, previously unconsidered hypothesis for the UME-ERJ
   flip: an acoustic/recording-domain effect on the model's own posterior
   peakiness, independent of L1 or UME-ERJ's holistic rating scale.
+- **Checked whether GOP-SF should extend to the BPE model -- no, and two
+  alternatives tried didn't help either** (`proscor/align.py`:
+  `gop_deletion_term`, `align_words_gop_deletion`; PLAN.md section 5h).
+  Confirmed BPE has the same substitution/deletion asymmetry the phone
+  model has (milder: substitution's separation from correct is ~45% of
+  deletion's, vs. ~28% for phones), but full substitution-marginalization
+  GOP-SF doesn't port cleanly (BPE pieces are orthographic chunks, not
+  phonetic units, and the vocabulary is much larger). Tried a cheap
+  deletion-only term instead (no marginalization needed, reuses
+  `_ctc_loglik`) -- checked empirically on 600 L2-ARCTIC utterances, it's
+  weaker than the existing score alone (r=0.078 vs. 0.146) and
+  wrong-signed against the binary label (-0.080), and combining it with
+  the existing score makes both worse. Also tried ensembling BPE with the
+  phone model's word-level score (free to test, already on disk) -- best
+  case found (85/15 BPE-weighted blend) is a noise-level 0.003 gain on
+  one label and a real loss on the other; phone's word-level signal is
+  too weak to add value by simple combination. Both negative results,
+  kept as tested infrastructure, not wired into any shipped path.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`

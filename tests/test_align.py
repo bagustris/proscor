@@ -156,6 +156,58 @@ def test_align_words_gop_scores_near_zero_for_perfectly_matching_audio(monkeypat
     assert results[1]["n_frames"] == 2
 
 
+def test_gop_deletion_term_matches_manual_computation():
+    """gop_deletion_term(i) should be exactly canonical_ll - logP(sequence
+    with word i's tokens removed) -- computed here by hand via the same
+    _ctc_loglik the function itself uses, on a case with 3 words (2 tokens
+    each) so there's a real "remove a whole span, not just one token" to
+    check."""
+    blank = 0
+    rng = np.random.default_rng(1)
+    T, V = 20, 6
+    logits = rng.normal(size=(T, V))
+    m = logits.max(-1, keepdims=True)
+    lp = logits - m - np.log(np.exp(logits - m).sum(-1, keepdims=True))
+
+    flat_tokens = [1, 2, 3, 4, 5, 1]  # 3 words of 2 tokens each
+    spans = [(0, 2), (2, 4), (4, 6)]
+
+    scores = align.gop_deletion_term(lp, flat_tokens, spans, blank)
+    canonical_ll = align._ctc_loglik(lp, flat_tokens, blank)
+    for (start, end), score in zip(spans, scores):
+        del_tokens = flat_tokens[:start] + flat_tokens[end:]
+        expected = canonical_ll - align._ctc_loglik(lp, del_tokens, blank)
+        assert score == pytest.approx(expected, abs=1e-6)
+
+
+def test_gop_deletion_term_positive_when_word_clearly_present():
+    """A word whose tokens are confidently, exclusively hot across their own
+    frames (nothing else fits nearly as well) should score positive:
+    keeping it explains the audio much better than skipping straight to
+    the next word would."""
+    blank = 0
+    # frames: a(hot) a(hot) blank b(hot) b(hot) blank
+    lp = _lp_for_path([1, 1, blank, 2, 2, blank], T=6, V=3, hot=0.0, cold=-30.0)
+    flat_tokens = [1, 2]
+    spans = [(0, 1), (1, 2)]
+    scores = align.gop_deletion_term(lp, flat_tokens, spans, blank)
+    assert all(s > 0 for s in scores)
+
+
+def test_align_words_gop_deletion_shape_matches_align_words_gop(monkeypatch):
+    tok2id = {"▁a": 1, "▁b": 2}
+    blank = 0
+    monkeypatch.setattr(align, "_session", lambda model_dir=None, use_int8=None: None)
+    monkeypatch.setattr(align, "_VOCAB", (tok2id, blank))
+    lp = _lp_for_path([1, 1, blank, 2, 2], T=5, V=3, hot=0.0, cold=-30.0)
+    monkeypatch.setattr(align, "_logprobs", lambda samples, model_dir=None, use_int8=None: lp)
+
+    samples = np.zeros(1600, dtype=np.float32)
+    scores = align.align_words_gop_deletion(samples, ["a", "b"], sr=align.SAMPLE_RATE)
+    assert len(scores) == 2
+    assert all(s is not None and s > 0 for s in scores)  # both words clearly present
+
+
 def test_align_words_gop_returns_none_for_unsegmentable_word(monkeypatch):
     tok2id = {"▁a": 1}
     blank = 0

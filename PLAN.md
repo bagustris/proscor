@@ -1561,6 +1561,103 @@ for the *immediate* question and wasn't investigated further here.
 
 ---
 
+### 5h. Does extending GOP-SF to the BPE model help? Checked, no — two honest negative results
+
+Asked directly: would porting section 5f's segmentation-free fix to the
+BPE model likely improve it, and if not, what would? Answer, checked
+empirically rather than assumed either way: **full substitution-style
+GOP-SF is not well-motivated for BPE, and the two cheaper alternatives
+tried both failed to help.**
+
+**Does BPE have the same disease first.** Before building anything,
+checked whether BPE's word-level posterior-deficit GOP shows the same
+substitution/deletion asymmetry the phone model had at phone level
+(400 L2-ARCTIC utterances, words bucketed by whether their phone-level
+tags were substitutions only, deletions only, both, or none):
+
+| bucket | n | mean | median | frac exactly 0.0 |
+|---|---|---|---|---|
+| correct | 2,534 | -0.132 | 0.0 | 0.928 |
+| substitution only | 1,159 | -0.320 | 0.0 | 0.810 |
+| deletion only | 174 | -0.549 | 0.0 | 0.747 |
+| both | 125 | -0.477 | 0.0 | 0.552 |
+
+Yes — same qualitative pattern (median pinned at 0.0 for every bucket,
+substitutions separate less from correct than deletions do: mean gap
+0.19 vs. 0.42, frac-zero gap 0.12 vs. 0.18), just milder than the phone
+model's version (there, substitution's gap was ~28% of deletion's; here
+it's ~45% — plausibly because a BPE token spans several phones, so one
+wrong phone inside it gets partly diluted rather than fully masking the
+whole unit, unlike phone-level scoring where the unit *is* the error).
+
+**Why full GOP-SF is still the wrong port, despite the disease being
+present:** the fix works by marginalizing "any phone, or nothing" at a
+position — a well-defined question because phones are the actual unit of
+mispronunciation. "Any other BPE subword piece, or nothing" at a token
+position isn't the same kind of question: BPE pieces are orthographic
+chunks (`_segmentations` in `proscor/align.py` shows a single word can
+tokenize several different ways with no pronunciation difference implied
+at all), so marginalizing over arbitrary alternate pieces doesn't clearly
+correspond to "was this mispronounced" the way phone substitution does —
+and the vocabulary to marginalize over is far larger than the phone
+model's ~392 symbols, so it would cost more for a weaker-motivated signal
+on top of a milder underlying problem. Not implemented.
+
+**Alternative 1, cheap and well-motivated on paper: a deletion-only term**
+(`proscor.align.gop_deletion_term` / `align_words_gop_deletion`,
+unit-tested in `tests/test_align.py`). No marginalization needed at all —
+"does the audio fit better if this word's tokens weren't required at
+all," reusing the already-tested `_ctc_loglik` with the word's tokens
+removed. Well-defined regardless of subword granularity, and the bucket
+table above shows deletions carry the real signal for BPE too, same as
+for phones. **Tested on 600 L2-ARCTIC utterances (5,679 words) — it does
+not help:**
+
+| | vs. frac_correct | vs. any_error (inverted) |
+|---|---|---|
+| posterior-deficit alone | 0.146 | 0.112 |
+| deletion-term alone | 0.078 | **-0.080** |
+| sum, z-normalized | 0.137 | 0.020 |
+
+The deletion term alone is weaker than the existing score, wrong-signed
+against the binary label, and combining the two (even after normalizing
+scale so one doesn't dominate) makes both worse, not better. The
+mechanistic read: a mispronounced word usually still has roughly the
+right *duration/shape* as a word-sized chunk (some internal phones are
+off, but something clearly fills that slot) — "is this word's span
+audibly absent altogether" is a cruder, different question than "was it
+pronounced correctly," and L2-ARCTIC's per-word labels test the latter.
+Kept in the codebase as correct, tested, useful infrastructure (the same
+`_ctc_loglik`-reuse pattern section 5f's deletion term uses), not wired
+into any shipped or default scoring path, and not claimed as an
+improvement.
+
+**Alternative 2: ensemble BPE with the phone model's word-level score**
+(motivated by their partially complementary error profiles — that's the
+whole reason the ranking flips between corpora). Free to test: both
+scores already sit in `results/l2arctic_word.json.arrays.json` from
+section 5e, no new inference needed. Best case found, an 85/15
+BPE-weighted z-normalized blend: r=0.172 vs. frac_correct (BPE alone:
+0.169 — a 0.003 gain, noise) and r=0.143 vs. any_error (BPE alone: 0.149
+— a **loss**). Phone's word-level signal (r=0.067 / 0.008 alone,
+barely above zero for the binary label) is too weak and noisy to add
+value through a simple linear blend at any weighting tried. Not pursued
+further.
+
+**Bottom line:** the one improvement this whole investigation actually
+found and validated is section 5f's GOP-SF applied to the *phone* model,
+where the direct hypothesis test (substitution/correct phones separating
+at the median, 0.0=0.0 -> -0.061 vs. -0.223) is unambiguous even though
+the aggregate correlation gain is modest and not yet proven significant
+(the paired test in progress will settle that). For BPE specifically, two
+plausible, cheap, evidence-motivated fixes were tried and both failed —
+a real finding (it rules out two ideas a reviewer might otherwise
+suggest) even though it isn't the improvement that was asked for. No
+further BPE-specific fix is proposed here without a better-motivated idea
+than these two.
+
+---
+
 ## 6. CLI commands summary  (completing the empty section from the old plan)
 
 ```bash

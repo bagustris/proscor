@@ -249,6 +249,60 @@ def _ctc_viterbi(lp: np.ndarray, tokens: list, blank: int) -> tuple:
     return path, loglik
 
 
+# --- Deletion-term segmentation-free score (PLAN.md section 5h) -----------
+#
+# PLAN.md section 5f built full segmentation-free GOP (Cao et al. 2025) for
+# the phone model: for each phone, compare log P(canonical) against log
+# P(canonical with that phone replaced by "any phone, or nothing"),
+# marginalized over every alignment. Checking whether the same fix is
+# worth building for the BPE model first (proscor/stats-style measure
+# before build, not assume): scripts/eval_l2arctic_word.py's per-word data,
+# broken down by whether a word's errors were substitutions only,
+# deletions only, or both, shows BPE has the *same qualitative* asymmetry
+# posterior-deficit GOP has at phone level -- substitution-only words barely
+# separate from correct ones (mean gap 0.19, frac-exactly-zero gap 0.12),
+# deletion-only words separate much more (mean gap 0.42, frac-exactly-zero
+# gap 0.18) -- just milder than the phone-level version (there the sub gap
+# was ~28% of the del gap; here it's ~45%).
+#
+# Full substitution-marginalization GOP-SF is the wrong fix to port,
+# though: "replace this BPE token with a different arbitrary subword
+# piece" isn't a real mispronunciation the way "replace this phone with a
+# different phone" is (BPE pieces are orthographic chunks, not phonetic
+# units), and BPE's vocabulary is far larger than the phone model's
+# ~392 symbols, so full marginalization would be both semantically weaker
+# and far more expensive here.
+#
+# The deletion term alone doesn't have either problem: "does the audio fit
+# better if this word simply wasn't said at all" is well-defined
+# regardless of token granularity, and needs no marginalization machinery
+# -- it's just `_ctc_loglik` on the token sequence with that word's tokens
+# removed, already implemented and tested. `gop_deletion_term` below is
+# that score on its own (not combined with posterior-deficit -- section
+# 5h's own results decide whether/how to combine them).
+
+
+def gop_deletion_term(lp: np.ndarray, flat_tokens: list, spans: list, blank: int) -> list:
+    """For each word's (start, end) span into `flat_tokens`, `canonical_ll -
+    logP(flat_tokens with that word's tokens removed)`. Positive: the
+    canonical word explains the audio better than skipping it (well
+    pronounced/present). Negative: the audio is explained *better* by the
+    word not being there at all (the deletion posterior-deficit GOP is
+    close to blind to, per the module comment above). Unlike the phone
+    model's SDI score, this is not bounded <= 0 -- there's no substitution
+    candidate set here, just two competing whole-sequence hypotheses."""
+    canonical_ll = _ctc_loglik(lp, flat_tokens, blank)
+    scores = []
+    for start, end in spans:
+        if start == end:
+            scores.append(None)
+            continue
+        del_tokens = flat_tokens[:start] + flat_tokens[end:]
+        del_ll = _ctc_loglik(lp, del_tokens, blank) if del_tokens else _NEG
+        scores.append(canonical_ll - del_ll)
+    return scores
+
+
 def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
                      model_dir: str = None, use_int8: bool = None) -> list:
     """Force-align a full utterance's canonical `words` against `samples` and
@@ -302,6 +356,31 @@ def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
         results.append({"start_frame": int(idx[0]), "end_frame": int(idx[-1]),
                          "n_frames": int(idx.size), "gop": gop})
     return results
+
+
+def align_words_gop_deletion(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
+                              model_dir: str = None, use_int8: bool = None) -> list:
+    """Deletion-term counterpart to `align_words_gop` (PLAN.md section 5h):
+    same target-word construction, scored with `gop_deletion_term` instead
+    of Viterbi posterior-deficit. Returns one score per word (or None if
+    unsegmentable), same shape as `align_words_gop`'s `gop` field."""
+    samples = np.ascontiguousarray(samples, dtype=np.float32)
+    if samples.max(initial=0.0) > 1.0 or samples.min(initial=0.0) < -1.0:
+        samples = samples / 32768.0
+    if sr != SAMPLE_RATE:
+        from audiokit import resample
+
+        samples = np.asarray(resample(samples, sr, SAMPLE_RATE), dtype=np.float32)
+
+    _session(model_dir, use_int8)
+    lp = _logprobs(samples, model_dir, use_int8)
+    tok2id, blank = _VOCAB
+
+    flat_tokens, spans = _sentence_tokens(words, tok2id, blank)
+    if not flat_tokens:
+        return [None] * len(words)
+
+    return gop_deletion_term(lp, flat_tokens, spans, blank)
 
 
 def _greedy_text(lp: np.ndarray) -> str:
