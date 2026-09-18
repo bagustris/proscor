@@ -24,7 +24,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from proscor.align import _ctc_viterbi
+from proscor.align import _NEG, _ctc_loglik, _ctc_viterbi
 
 MODEL_REPO = "onnx-community/wav2vec2-lv-60-espeak-cv-ft-ONNX"
 SAMPLE_RATE = 16000
@@ -180,6 +180,170 @@ def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
                               "n_frames": sum(p["n_frames"] for p in this_word_phones if p is not None)})
         else:
             word_gop.append(None)
+
+    return {"word_gop": word_gop, "phone_gop": phone_gop}
+
+
+# --- Segmentation-free GOP (PLAN.md section 5f) ----------------------------
+#
+# align_words_gop's GOP is "posterior-deficit at the Viterbi-aligned frames":
+# force-align, then compare the aligned token's log-prob to the best token's
+# log-prob at those same frames. Section 5c/5e found this catches deletions
+# well but is nearly blind to substitutions (median GOP for a substituted
+# phone is exactly 0.0 in every L1 tested) -- with a peaky CTC model,
+# Viterbi lands on the frames where the *wrong* phone the speaker actually
+# produced peaks, so "posterior at the aligned frame" is high even though
+# the wrong phone was said.
+#
+# Cao, Fan, Svendsen & Salvi, "Segmentation-free Goodness of Pronunciation"
+# (arXiv:2507.16838, IEEE 2025) sidesteps this: instead of scoring the
+# aligned frames of the canonical phone, compare two whole-sequence CTC
+# likelihoods -- log P(canonical sequence) vs. log P(the same sequence with
+# this one phone replaced by "any phone, or nothing"), both marginalized
+# over *every* alignment via the CTC forward algorithm (no Viterbi/
+# segmentation step at all). GOP_SF(i) = logP(L_C) - logP(L_SDI) is large
+# when the canonical phone is clearly the best explanation for that stretch
+# of audio, and collapses toward 0 when some other phone (or silence) fits
+# just as well -- including a confidently-produced *wrong* phone, which is
+# exactly the case posterior-deficit GOP misses.
+#
+# Implementation, corrected version: an earlier attempt tried to compute
+# the substitution term in one forward pass by replacing the target
+# position's emission with log-sum-exp over every candidate phone's
+# log-prob at each frame (a "wildcard" state sharing one scalar DP with the
+# rest of the sequence). That's wrong, not just imprecise: whenever the
+# wildcard state is active for more than one frame -- which is the normal
+# case, since forward marginalizes over every possible frame-count
+# allocation -- a per-frame log-sum-exp lets different frames within the
+# SAME span implicitly "vote" for different candidates (mixing candidate
+# c's evidence at frame t with candidate c''s at frame t+1), which is not
+# what "this whole span is candidate c" means. Caught by brute-force
+# comparison in tests/test_align_phone.py: it overcounted probability mass
+# by 2x-40x, not a rounding-level gap. logP(any candidate here) genuinely
+# requires logsumexp_c logP(sequence with c substituted in) -- summing
+# whole-sequence likelihoods per candidate, not per-frame emissions.
+#
+# _ctc_loglik_wildcard now does exactly that: one _ctc_loglik call per
+# candidate (correct by construction -- it's the literal definition, and
+# _ctc_loglik is already the well-tested forward algorithm). The cost is
+# O(T*S) per candidate, so gop_sf restricts each position's candidate pool
+# to a small, data-driven confusion set (the canonical phone plus the
+# top-K phones by peak log-prob in a local window around that position)
+# rather than the full ~40-392-symbol vocabulary -- benchmarked at ~1
+# second/utterance at K=10 on a realistic 40-phone utterance (T=300,
+# V=392), which is what makes a full-corpus run tractable. A confidently
+# *wrong* phone -- the exact case this method exists to catch -- has high
+# local posterior by construction, so it lands in the top-K; this doesn't
+# undercut the method's point, it just skips checking phones with no local
+# acoustic support to begin with.
+
+
+def _ctc_loglik_wildcard(lp: np.ndarray, tokens: list, position: int, blank: int,
+                          candidate_ids: np.ndarray) -> float:
+    """logP(tokens, with tokens[position] replaced by "any phone in
+    candidate_ids") = logsumexp over one _ctc_loglik call per candidate.
+    Marginalizing a *whole-sequence* likelihood over candidates, not a
+    per-frame emission -- see the module comment above for why the faster
+    per-frame version is unsound."""
+    from scipy.special import logsumexp
+
+    lls = [_ctc_loglik(lp, tokens[:position] + [int(c)] + tokens[position + 1:], blank)
+           for c in candidate_ids]
+    return float(logsumexp(lls))
+
+
+def _local_candidates(lp: np.ndarray, tokens: list, position: int, blank: int,
+                       top_k: int = 10, pad_frac: float = 0.5) -> np.ndarray:
+    """The canonical phone at `position` plus the `top_k` phones with the
+    highest peak log-prob in a local window around it -- a bounded,
+    data-driven confusion set for `_ctc_loglik_wildcard`'s candidate_ids.
+    The window is `tokens`' position mapped proportionally onto `lp`'s T
+    frames (tokens are ~evenly spaced in time on average), padded by
+    `pad_frac` of one token's average width on each side so a phone whose
+    true span drifted from the proportional estimate is still covered."""
+    T, N = lp.shape[0], len(tokens)
+    width = max(T / max(N, 1), 1.0)
+    lo = max(0, int(position * width - pad_frac * width))
+    hi = min(T, int((position + 1) * width + pad_frac * width) + 1)
+    window = lp[lo:hi]  # (w, V)
+    peak = window.max(axis=0)  # (V,) -- this phone's best frame in the window
+    peak = peak.copy()
+    peak[blank] = -np.inf
+    order = np.argsort(peak)[::-1]
+    top = [int(c) for c in order[:top_k] if peak[c] > -np.inf]
+    return np.array(sorted(set(top) | {tokens[position]}))
+
+
+def gop_sf(lp: np.ndarray, tokens: list, blank: int, vocab_size: int,
+           top_k: int = 10) -> list:
+    """Segmentation-free GOP (Cao et al. 2025, GOP-SF-SD variant) for every
+    position in `tokens`, forced through `lp`'s CTC posteriors with no
+    alignment/segmentation step. Returns one float per token (or None for
+    every position if the audio can't even fit the canonical sequence).
+    `tokens` should be the *whole utterance's* flat phone-id sequence (not
+    one word in isolation), so surrounding-word context is available the
+    same way `align_words_gop`'s Viterbi pass already uses it. `vocab_size`
+    is accepted for API stability but unused now that the substitution
+    candidate pool comes from `_local_candidates` rather than the full
+    vocabulary -- see the module comment above."""
+    canonical_ll = _ctc_loglik(lp, tokens, blank)
+    if canonical_ll <= _NEG / 2:
+        return [None] * len(tokens)
+
+    scores = []
+    for i in range(len(tokens)):
+        candidate_ids = _local_candidates(lp, tokens, i, blank, top_k=top_k)
+        sub_ll = _ctc_loglik_wildcard(lp, tokens, i, blank, candidate_ids)
+        del_tokens = tokens[:i] + tokens[i + 1:]
+        del_ll = _ctc_loglik(lp, del_tokens, blank) if del_tokens else _NEG
+        sdi_ll = float(np.logaddexp(sub_ll, del_ll))
+        scores.append(canonical_ll - sdi_ll)
+    return scores
+
+
+def align_words_gop_sf(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
+                        use_int8: bool = True) -> dict:
+    """Segmentation-free counterpart to `align_words_gop`: same target-phone
+    construction (espeak phonemization per word, flattened to one
+    utterance-level sequence), but scored with `gop_sf` instead of
+    Viterbi-alignment posterior-deficit. Returns
+    `{"word_gop": [...], "phone_gop": [[...], ...]}` in the same shape as
+    `align_words_gop`, so it's a drop-in swap in eval scripts."""
+    samples = np.ascontiguousarray(samples, dtype=np.float32)
+    if samples.max(initial=0.0) > 1.0 or samples.min(initial=0.0) < -1.0:
+        samples = samples / 32768.0
+    if sr != SAMPLE_RATE:
+        from audiokit import resample
+
+        samples = np.asarray(resample(samples, sr, SAMPLE_RATE), dtype=np.float32)
+
+    _session(use_int8)
+    lp = _logprobs(samples, use_int8)
+
+    flat, spans, phone_texts = [], [], []
+    for w in words:
+        phones, toks = _word_phones_and_ids(w)
+        start = len(flat)
+        flat.extend(toks)
+        spans.append((start, len(flat)))
+        phone_texts.append(phones)
+
+    if not flat:
+        return {"word_gop": [None] * len(words), "phone_gop": [[] for _ in words]}
+
+    scores = gop_sf(lp, flat, _BLANK, lp.shape[1])
+
+    word_gop, phone_gop = [], []
+    for (start, end), phones in zip(spans, phone_texts):
+        if start == end:
+            word_gop.append(None)
+            phone_gop.append([])
+            continue
+        this_word = [{"phone": p, "gop": scores[k]} if scores[k] is not None else None
+                     for k, p in zip(range(start, end), phones)]
+        phone_gop.append(this_word)
+        vals = [p["gop"] for p in this_word if p is not None]
+        word_gop.append({"gop": float(np.mean(vals))} if vals else None)
 
     return {"word_gop": word_gop, "phone_gop": phone_gop}
 

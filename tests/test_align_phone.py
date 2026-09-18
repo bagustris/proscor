@@ -159,3 +159,192 @@ def test_reconcile_already_matching_length_is_all_matches():
         ["K", "AE1", "T"], ["k", "æ", "t"], [0.0, 0.1, 0.2])
     assert ops == ["match", "match", "match"]
     assert gops == [0.0, 0.1, 0.2]
+
+
+# --- segmentation-free GOP (PLAN.md section 5f; Cao et al. 2025) -----------
+
+def _rand_lp(T, V, seed):
+    """Log-softmax-shaped but otherwise arbitrary log-probs (not hot/cold
+    saturated), so a brute-force enumeration has something nontrivial to
+    sum over -- needed for test_ctc_loglik_wildcard_matches_brute_force."""
+    rng = np.random.default_rng(seed)
+    logits = rng.normal(size=(T, V))
+    m = logits.max(-1, keepdims=True)
+    return logits - m - np.log(np.exp(logits - m).sum(-1, keepdims=True))
+
+
+def test_ctc_loglik_wildcard_matches_brute_force_with_one_candidate():
+    """logsumexp over a single-element candidate set must reduce to exactly
+    that candidate's own _ctc_loglik -- a non-tautological check that the
+    position slicing (tokens[:position] + [c] + tokens[position+1:]) is
+    exactly right, independent of the logsumexp-over-many-candidates
+    machinery around it."""
+    blank = 0
+    tokens = [1, 2, 3]
+    lp = _rand_lp(T=9, V=5, seed=1)
+
+    wildcard_ll = align_phone._ctc_loglik_wildcard(lp, tokens, position=1, blank=blank,
+                                                     candidate_ids=np.array([2]))
+    assert wildcard_ll == pytest.approx(align_phone._ctc_loglik(lp, tokens, blank), abs=1e-6)
+
+
+def test_ctc_loglik_wildcard_matches_brute_force_enumeration():
+    """logP of "some candidate phone was produced here" is logsumexp over
+    every candidate's own logP with that phone substituted in -- the
+    definition _ctc_loglik_wildcard now computes directly (an earlier,
+    faster single-lattice version got this wrong; see the module comment
+    in align_phone.py). Includes candidates that collide with tokens[1]'s
+    neighbors (1 and 3), which the old implementation could not handle
+    correctly."""
+    blank = 0
+    tokens = [1, 2, 3]
+    lp = _rand_lp(T=9, V=5, seed=1)
+    candidates = np.array([1, 2, 3, 4])
+
+    wildcard_ll = align_phone._ctc_loglik_wildcard(lp, tokens, position=1, blank=blank,
+                                                     candidate_ids=candidates)
+    brute = [align_phone._ctc_loglik(lp, tokens[:1] + [c] + tokens[2:], blank) for c in candidates]
+    from scipy.special import logsumexp
+    assert wildcard_ll == pytest.approx(logsumexp(brute), abs=1e-6)
+
+
+def test_ctc_loglik_wildcard_matches_brute_force_at_every_position():
+    """Same proof, repeated at each position in a longer sequence (which
+    includes repeated tokens, so some positions' neighbors coincide with
+    other candidates) and a different seed."""
+    blank = 0
+    tokens = [1, 2, 3, 1, 2]
+    lp = _rand_lp(T=15, V=5, seed=2)
+    candidates = np.array([1, 2, 3, 4])
+    from scipy.special import logsumexp
+
+    for pos in range(len(tokens)):
+        wildcard_ll = align_phone._ctc_loglik_wildcard(lp, tokens, position=pos, blank=blank,
+                                                         candidate_ids=candidates)
+        brute = [align_phone._ctc_loglik(lp, tokens[:pos] + [c] + tokens[pos + 1:], blank)
+                 for c in candidates]
+        assert wildcard_ll == pytest.approx(logsumexp(brute), abs=1e-6), f"position {pos}"
+
+
+def test_local_candidates_always_includes_canonical_phone():
+    """Structural requirement for gop_sf's <= 0 guarantee: whatever the
+    local window picks up, the canonical phone itself must always be in
+    the returned set, even at a position with no acoustic support for it
+    at all (an extreme mispronunciation, or a degenerate all-blank lp)."""
+    blank = 0
+    lp = np.full((10, 6), -40.0)
+    lp[:, blank] = 0.0  # only blank has any real mass anywhere
+    candidates = align_phone._local_candidates(lp, [1, 2, 3], position=1, blank=blank, top_k=2)
+    assert 2 in candidates
+    assert blank not in candidates
+
+
+def test_gop_sf_matches_manual_sub_del_combination():
+    """gop_sf's own combining logic (canonical - logaddexp(sub, del)),
+    using the SAME candidate selection (_local_candidates) production code
+    uses -- the second half of the correctness chain (the first half is
+    the wildcard tests above)."""
+    blank = 0
+    tokens = [1, 2, 3]
+    lp = _rand_lp(T=9, V=5, seed=3)
+    vocab_size = 5
+
+    scores = align_phone.gop_sf(lp, tokens, blank, vocab_size, top_k=10)
+
+    canonical_ll = align_phone._ctc_loglik(lp, tokens, blank)
+    for pos in range(len(tokens)):
+        candidate_ids = align_phone._local_candidates(lp, tokens, pos, blank, top_k=10)
+        sub_ll = align_phone._ctc_loglik_wildcard(lp, tokens, pos, blank, candidate_ids)
+        del_tokens = tokens[:pos] + tokens[pos + 1:]
+        del_ll = align_phone._ctc_loglik(lp, del_tokens, blank)
+        expected = canonical_ll - float(np.logaddexp(sub_ll, del_ll))
+        assert scores[pos] == pytest.approx(expected, abs=1e-6)
+
+
+def test_gop_sf_is_never_positive():
+    """Structural property, not just an empirical one: the wildcard's
+    candidate set always includes the canonical phone itself, so
+    logP(L_SDI) >= logP(L_C) always (summing in a superset can only add
+    mass), making GOP_SF = logP(L_C) - logP(L_SDI) <= 0 for every position,
+    on any audio -- same "0 = ceiling, negative = deficit" convention the
+    existing posterior-deficit GOP already uses."""
+    lp = _rand_lp(T=12, V=6, seed=4)
+    scores = align_phone.gop_sf(lp, [1, 2, 3, 4], blank=0, vocab_size=6)
+    assert all(s is not None and s <= 1e-6 for s in scores)
+
+
+def test_gop_sf_is_never_positive_with_adjacent_repeated_phone():
+    """Same property, specifically at a position whose canonical phone
+    equals its immediate neighbor (e.g. a word boundary like "big gate",
+    ...G ... G... with no phone between) -- the one case the old
+    lattice-trick implementation could not guarantee this for, since
+    excluding neighbor-colliding candidates also excluded the canonical
+    phone itself when it coincided with a neighbor. _local_candidates
+    unions in the canonical phone unconditionally, so this now holds too."""
+    lp = _rand_lp(T=15, V=6, seed=7)
+    scores = align_phone.gop_sf(lp, [1, 2, 2, 3], blank=0, vocab_size=6)
+    assert all(s is not None and s <= 1e-6 for s in scores)
+
+
+def test_gop_sf_near_zero_when_phone_is_unambiguous():
+    """A phone with no viable competing sound anywhere near its frames (a
+    huge, isolated hot spike, cold everywhere else including other vocab
+    entries at those frames) should have almost nothing for the wildcard to
+    latch onto -- GOP_SF should sit close to its 0 ceiling."""
+    blank = 0
+    # frames: blank, a(very hot, isolated), blank, b(very hot), blank
+    lp = np.full((5, 4), -40.0)
+    lp[0, blank] = 0.0
+    lp[1, 1] = 0.0
+    lp[2, blank] = 0.0
+    lp[3, 2] = 0.0
+    lp[4, blank] = 0.0
+    scores = align_phone.gop_sf(lp, [1, 2], blank=blank, vocab_size=4)
+    assert scores[0] == pytest.approx(0.0, abs=0.5)
+    assert scores[1] == pytest.approx(0.0, abs=0.5)
+
+
+def test_gop_sf_strongly_negative_for_confident_substitution():
+    """If a different phone (not the canonical one) is confidently produced
+    across the frames the canonical phone would need, the wildcard sees
+    that alternative as a much better fit -- GOP_SF should be a large
+    deficit, not near zero. token 2 (canonical, "b") is never hot anywhere
+    in this audio; token 3 dominates its whole slot instead."""
+    blank = 0
+    lp = np.full((7, 5), -40.0)
+    for t in (0, 1, 2):
+        lp[t, 1] = 0.0   # "a" clearly present
+    lp[3, blank] = 0.0
+    for t in (4, 5, 6):
+        lp[t, 3] = 0.0   # something else ("c") clearly present where "b" was expected
+    scores = align_phone.gop_sf(lp, [1, 2], blank=blank, vocab_size=5)
+    assert scores[0] == pytest.approx(0.0, abs=0.5)   # "a" is unambiguous
+    assert scores[1] < -5.0                            # "b" is a confident miss
+
+
+def test_gop_sf_returns_none_when_audio_too_short():
+    lp = _rand_lp(T=1, V=4, seed=5)
+    scores = align_phone.gop_sf(lp, [1, 2, 3], blank=0, vocab_size=4)
+    assert scores == [None, None, None]
+
+
+def test_align_words_gop_sf_shape_matches_align_words_gop(monkeypatch):
+    """Plumbing test mirroring test_align_words_gop_word_score_is_mean_of_its_phone_scores:
+    same word/phone grouping, scored with gop_sf instead of Viterbi posterior-deficit."""
+    blank = 0
+    monkeypatch.setattr(align_phone, "_TOK2ID", {"a": 1, "b": 2, "c": 3})
+    monkeypatch.setattr(align_phone, "_BLANK", blank)
+    monkeypatch.setattr(align_phone, "_session", lambda use_int8=True: None)
+    monkeypatch.setattr(align_phone, "_phonemize_word",
+                         lambda w: {"one": ("a",), "two": ("b", "c")}[w])
+    lp = _rand_lp(T=10, V=4, seed=6)
+    monkeypatch.setattr(align_phone, "_logprobs", lambda samples, use_int8=True: lp)
+
+    samples = np.zeros(1600, dtype=np.float32)
+    result = align_phone.align_words_gop_sf(samples, ["one", "two"], sr=align_phone.SAMPLE_RATE)
+
+    assert [p["phone"] for p in result["phone_gop"][0]] == ["a"]
+    assert [p["phone"] for p in result["phone_gop"][1]] == ["b", "c"]
+    assert result["word_gop"][0]["gop"] <= 1e-6
+    assert result["word_gop"][1]["gop"] == pytest.approx(
+        float(np.mean([result["phone_gop"][1][0]["gop"], result["phone_gop"][1][1]["gop"]])))
