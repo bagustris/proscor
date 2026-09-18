@@ -1692,6 +1692,111 @@ than these two.
 
 ---
 
+### 5i. The acoustic model itself is a bigger lever than any scoring formula tried
+
+Asked directly: is there a way to improve performance further without
+adding another dataset? Sections 5f-5h all touched the *scoring formula*
+while holding the phone-CTC acoustic model fixed
+(`facebook/wav2vec2-lv-60-espeak-cv-ft`, LibriLight-60k English-only
+pretraining). Advisor-suggested check, after a literature pass turned up
+nothing better to try on the formula side (below): pull the model lever
+instead, since it had never been touched.
+
+**Literature check first, to avoid reinventing or wasting effort on a
+dead end.** Two things looked promising on paper and were checked before
+building:
+- **GOP-SF-Norm** (Cao et al., arXiv:2507.16838v3): normalizing by
+  E[t2-t1], the *expected* segment duration under the CTC posterior
+  (computed from forward-variable occupancy summed over all frames, not
+  a fixed/Viterbi length). Their own reported gain is small (0.433 ->
+  0.449 scalar PCC) and getting E[duration] right needs real additional
+  machinery (a proper occupancy computation, not just the forward
+  log-likelihood section 5f already computes) — given the two false
+  starts building the section 5f wildcard trick, and a gain in the same
+  modest range as what's already proven, this was judged not worth the
+  added correctness risk. Not built.
+- **Phonologically-restricted substitution candidate sets** (Parikh et
+  al., Interspeech 2025, "restricted phoneme substitutions"/RPS): the
+  literature answer is *no* — their own Table 2 (speechocean762) shows
+  unrestricted substitutions (UPS) beats RPS on PCC (0.502/0.488 vs.
+  0.476/0.461 high/low-confidence), because "phoneme recognition models
+  are not optimized for predefined phoneme clusters, limiting their
+  ability to generalize pronunciation variations." Confirms section 5f's
+  choice to marginalize over the full vocabulary was right; also directly
+  rules out revisiting the BPE-restricted-candidate idea section 5h
+  already dropped for a different reason. Not built.
+  (Caveat on comparing to that paper's own numbers: their headline PCCs
+  use a fitted polynomial regression to the label, same non-raw-Pearson
+  caveat already flagged for Cao et al.'s numbers in section 5f — their
+  FA baseline of 0.279-0.297 on speechocean762 is not directly
+  comparable to this plan's raw-Pearson 0.433, for that reason and
+  because their model/formula differ too.)
+
+**What was checked and built: swapping the acoustic model.** Same
+espeak-phone fine-tuning recipe, same 392-symbol vocab, drop-in
+replacement — `facebook/wav2vec2-xlsr-53-espeak-cv-ft`, built on
+cross-lingual XLSR-53 pretraining (53 languages) rather than lv-60's
+English-only LibriLight pretraining. No ONNX export exists for it, so
+`proscor/align_phone.py`'s `_session`/`_logprobs` now branch on backend
+by `model_id` (torch+transformers path added; default `model_id=None`
+keeps the original ONNX/lv-60 path unchanged, verified by all 62
+pre-existing tests plus 3 new ones on the branching logic itself,
+including a regression test for a real bug caught building this: the
+xlsr-53 tokenizer's vocab has one more entry, `"|"` — a word-delimiter
+token — than the model's 392-class CTC head actually outputs, which
+indexed out of bounds until filtered).
+
+**Result: consistent, substantial gains, full corpora, both engines,
+both scoring formulas, every language tested:**
+
+| so762 metric | lv-60 posterior | xlsr-53 posterior | lv-60 SF | xlsr-53 SF |
+|---|---|---|---|---|
+| word-level | 0.325 | **0.362** | 0.338 | **0.380** |
+| utterance-level | 0.536 | **0.546** | 0.560 | **0.573** |
+| phone, matched-only | 0.425 | **0.468** | 0.432 | **0.484** |
+| phone, reconciled | 0.433 | **0.457** | 0.441 | **0.472** |
+| phone, reconciled binarized | 0.337 | **0.353** | 0.354 | **0.373** |
+
+| L2-ARCTIC phone-level | lv-60 posterior | xlsr-53 posterior | lv-60 SF | xlsr-53 SF |
+|---|---|---|---|---|
+| pooled (24 speakers) | 0.224 | **0.266** | 0.233 | **0.271** |
+| Arabic | 0.219 | **0.272** | 0.241 | **0.283** |
+| Hindi | 0.060 | **0.186** | 0.080 | **0.199** |
+| Korean | 0.103 | **0.139** | 0.109 | 0.139 |
+| Mandarin | 0.206 | **0.227** | 0.211 | **0.231** |
+| Spanish | 0.186 | **0.196** | 0.190 | **0.198** |
+| Vietnamese | 0.371 | **0.433** | 0.381 | **0.439** |
+
+Every cell moved the right direction; most moved by more than the
+GOP-SF formula change did on its own (section 5f). Hindi roughly
+tripled (0.060 -> 0.186 posterior, 0.080 -> 0.199 SF) — the language
+that showed the weakest phone-level signal in every prior section of
+this plan. **The two improvements stack**: lv-60 posterior-deficit
+(0.433 so762 phone reconciled, the section 5a headline number) to
+xlsr-53 GOP-SF (0.472) is a combined +0.039 (+9% relative), from a model
+swap and a formula change that were each validated independently, with
+zero new data and zero training.
+
+**Why this plausibly works:** XLSR-53's pretraining exposes the encoder
+to the phonetic diversity of 53 languages before phone-CTC fine-tuning,
+versus lv-60's English-only pretraining — a more linguistically diverse
+starting representation is a plausible reason it generalizes better to
+*non-native* English specifically (every corpus tested here), though this
+is a plausible mechanism, not a verified one (no probing/ablation of the
+encoder representations done here).
+
+**What's not yet done:** a paired significance test (same items, same
+script, mirroring every other engine comparison in this plan) to confirm
+this is proven, not just observed — queued next, following the same
+pattern section 5f's marginal-vs-paired result already showed matters
+(that gain looked modest-but-overlapping until the paired test settled
+it). Given this effect size is 2-10x larger than the SF-vs-posterior gap
+that *did* prove significant, a null result here would be surprising, but
+"would be surprising" is exactly the kind of claim this plan has learned
+not to state without running the test.
+
+---
+
 ## 6. CLI commands summary  (completing the empty section from the old plan)
 
 ```bash

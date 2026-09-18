@@ -278,6 +278,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one label and a real loss on the other; phone's word-level signal is
   too weak to add value by simple combination. Both negative results,
   kept as tested infrastructure, not wired into any shipped path.
+- **Alternate acoustic model, the largest single gain in this whole
+  investigation** (`proscor/align_phone.py`: `TORCH_MODEL_REPO`,
+  `_session`/`_logprobs` now branch on backend by `model_id`;
+  `--model-id` on `eval_so762_phone.py`/`eval_l2arctic_phone.py`;
+  PLAN.md section 5i). Checked the literature first: GOP-SF-Norm's own
+  reported gain is small for the added occupancy-computation machinery
+  it needs (not built); phonologically-restricted substitution sets are
+  shown in the literature (Parikh et al., Interspeech 2025) to
+  *underperform* unrestricted ones on PCC, confirming section 5f's
+  full-vocabulary choice was right (not built). What was built:
+  swapping `facebook/wav2vec2-lv-60-espeak-cv-ft` (English-only
+  pretraining) for `facebook/wav2vec2-xlsr-53-espeak-cv-ft`
+  (cross-lingual, 53-language pretraining) -- same fine-tuning recipe,
+  same 392-symbol vocab, no ONNX export so this path uses
+  `transformers`+`torch` (new optional deps, `requirements-eval.txt`).
+  Full-corpus result: **every metric improved, both engines, both
+  corpora, every L2-ARCTIC language** -- so762 phone reconciled 0.433
+  (lv-60 posterior) -> 0.472 (xlsr-53 GOP-SF, stacking both
+  improvements, +9% relative); L2-ARCTIC Hindi roughly tripled (0.060
+  -> 0.186 posterior), the weakest signal found anywhere in this plan.
+  Paired significance test (mirroring the rest of this plan) queued
+  next to confirm, not yet run.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
