@@ -7,3 +7,9 @@ scipy>=1.11
 phonemizer>=3.2   # eval_so762_phone.py only; needs the system espeak-ng library
                   # (Debian/Ubuntu: apt install espeak-ng; already present as
                   # libespeak-ng1 on most desktop Linux installs)
+torch>=2.0        # only for proscor.align_phone's TORCH_MODEL_REPO path
+                  # (PLAN.md section 5i, an alternate phone-CTC acoustic
+                  # model with no ONNX export); not needed for the default
+                  # ONNX/lv-60 path, CPU-only wheel is fine
+                  # (pip install torch --index-url https://download.pytorch.org/whl/cpu)
+transformers>=4.40  # loads TORCH_MODEL_REPO checkpoints; same scope as torch above

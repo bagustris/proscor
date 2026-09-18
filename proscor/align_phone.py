@@ -17,6 +17,18 @@ vowel+R into single rhotic tokens (e.g. "ɑːɹ" for the vowel in "mark", not
 separate "ɑː"+"ɹ") and sometimes drops the R sound in other contexts
 entirely — phonemizing live with espeak reproduces whatever convention the
 model actually learned instead of guessing it.
+
+**Alternate acoustic model** (PLAN.md section 5i): `TORCH_MODEL_REPO`
+(`facebook/wav2vec2-xlsr-53-espeak-cv-ft`, XLSR-53 cross-lingual
+pretraining instead of `MODEL_REPO`'s LibriLight-60k English-only
+pretraining) measurably beats the default on speechocean762 phone-level
+correlation, for both scoring methods -- a real, unexplored lever pulled
+alongside the scoring-formula work in sections 5f-5h. No ONNX export
+exists for it, so passing `model_id=TORCH_MODEL_REPO` to `align_words_gop`/
+`align_words_gop_sf` loads it via `transformers`+`torch` instead of
+`onnxruntime` (optional deps, only needed for this path); the default
+`model_id=None` keeps the original ONNX/lv-60 path byte-for-byte
+unchanged.
 """
 import json
 import re
@@ -27,10 +39,12 @@ import numpy as np
 from proscor.align import _NEG, _ctc_loglik, _ctc_viterbi
 
 MODEL_REPO = "onnx-community/wav2vec2-lv-60-espeak-cv-ft-ONNX"
+TORCH_MODEL_REPO = "facebook/wav2vec2-xlsr-53-espeak-cv-ft"
 SAMPLE_RATE = 16000
 
 _SESSION = None
-_SESSION_INT8 = None
+_SESSION_KEY = None  # (model_id, use_int8) for onnx, (model_id, None) for torch
+_BACKEND = None       # "onnx" or "torch"
 _TOK2ID = None
 _BLANK = None
 
@@ -45,33 +59,60 @@ def available() -> bool:
     return True
 
 
-def _session(use_int8: bool = True):
-    global _SESSION, _SESSION_INT8, _TOK2ID, _BLANK
-    import onnxruntime as ort
+def _session(model_id: str = None, use_int8: bool = True):
+    global _SESSION, _SESSION_KEY, _BACKEND, _TOK2ID, _BLANK
     from huggingface_hub import hf_hub_download
 
-    if _SESSION is not None and _SESSION_INT8 == use_int8:
+    model_id = model_id or MODEL_REPO
+    backend = "onnx" if model_id == MODEL_REPO else "torch"
+    key = (model_id, use_int8 if backend == "onnx" else None)
+    if _SESSION is not None and _SESSION_KEY == key:
         return _SESSION
-    fname = "onnx/model_int8.onnx" if use_int8 else "onnx/model.onnx"
-    path = hf_hub_download(MODEL_REPO, fname)
-    _SESSION = ort.InferenceSession(path)
-    _SESSION_INT8 = use_int8
 
-    vocab_path = hf_hub_download(MODEL_REPO, "vocab.json")
-    with open(vocab_path, encoding="utf-8") as f:
-        _TOK2ID = json.load(f)
+    if backend == "onnx":
+        import onnxruntime as ort
+
+        fname = "onnx/model_int8.onnx" if use_int8 else "onnx/model.onnx"
+        path = hf_hub_download(model_id, fname)
+        session = ort.InferenceSession(path)
+        vocab_path = hf_hub_download(model_id, "vocab.json")
+        with open(vocab_path, encoding="utf-8") as f:
+            vocab = json.load(f)
+    else:
+        from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2ForCTC
+
+        tok = Wav2Vec2CTCTokenizer.from_pretrained(model_id)
+        model = Wav2Vec2ForCTC.from_pretrained(model_id)
+        model.eval()
+        # The tokenizer's vocab can include a "|" word-delimiter entry the
+        # CTC head was never trained to emit (seen on the xlsr-53 checkpoint:
+        # 393 vocab entries, 392-class output) -- keep only ids the model
+        # actually outputs, or downstream indexing goes out of bounds.
+        vocab = {k: v for k, v in tok.get_vocab().items() if v < model.config.vocab_size}
+        session = model
+
+    _SESSION = session
+    _SESSION_KEY = key
+    _BACKEND = backend
+    _TOK2ID = vocab
     _BLANK = _TOK2ID["<pad>"]  # HF Wav2Vec2CTCTokenizer convention: pad = CTC blank
     return _SESSION
 
 
-def _logprobs(samples: np.ndarray, use_int8: bool = True) -> np.ndarray:
+def _logprobs(samples: np.ndarray, model_id: str = None, use_int8: bool = True) -> np.ndarray:
     """float32 mono 16 kHz [-1, 1] -> (T, vocab) CTC log-probs. wav2vec2
     takes raw waveform (per-utterance zero-mean/unit-variance normalized,
     matching the HF feature extractor's `do_normalize`) -- no fbank step."""
-    sess = _session(use_int8)
+    sess = _session(model_id, use_int8)
     samples = np.ascontiguousarray(samples, dtype=np.float32)
     samples = (samples - samples.mean()) / (samples.std() + 1e-7)
-    logits = sess.run(None, {"input_values": samples[None, :]})[0][0]
+    if _BACKEND == "onnx":
+        logits = sess.run(None, {"input_values": samples[None, :]})[0][0]
+    else:
+        import torch
+
+        with torch.no_grad():
+            logits = sess(torch.from_numpy(samples)[None, :]).logits[0].numpy()
     m = logits.max(-1, keepdims=True)
     return logits - m - np.log(np.exp(logits - m).sum(-1, keepdims=True))
 
@@ -104,7 +145,7 @@ def _word_phones_and_ids(word: str) -> tuple:
 
 
 def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
-                     use_int8: bool = True) -> dict:
+                     use_int8: bool = True, model_id: str = None) -> dict:
     """Force-align a full utterance's `words` against `samples` at phone
     granularity. Returns
     `{"word_gop": [...], "phone_gop": [[...], ...]}` (both parallel to
@@ -115,7 +156,10 @@ def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
     used for the coverage-limited direct phones-accuracy comparison in
     scripts/eval_so762_phone.py (mismatched phone counts vs. the dataset's
     own ARPABET segmentation -- e.g. from the R-merging above -- mean not
-    every word can be compared phone-for-phone)."""
+    every word can be compared phone-for-phone). `model_id`: None (default)
+    uses `MODEL_REPO` (ONNX); pass `TORCH_MODEL_REPO` (or another
+    espeak-phone HF repo with no ONNX export) to score with that model
+    instead, via `transformers`+`torch` (PLAN.md section 5i)."""
     samples = np.ascontiguousarray(samples, dtype=np.float32)
     if samples.max(initial=0.0) > 1.0 or samples.min(initial=0.0) < -1.0:
         samples = samples / 32768.0
@@ -124,8 +168,8 @@ def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
 
         samples = np.asarray(resample(samples, sr, SAMPLE_RATE), dtype=np.float32)
 
-    _session(use_int8)
-    lp = _logprobs(samples, use_int8)
+    _session(model_id, use_int8)
+    lp = _logprobs(samples, model_id, use_int8)
 
     flat, spans, phone_texts = [], [], []
     for w in words:
@@ -338,13 +382,14 @@ def gop_sf(lp: np.ndarray, tokens: list, blank: int, vocab_size: int) -> list:
 
 
 def align_words_gop_sf(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
-                        use_int8: bool = True) -> dict:
+                        use_int8: bool = True, model_id: str = None) -> dict:
     """Segmentation-free counterpart to `align_words_gop`: same target-phone
     construction (espeak phonemization per word, flattened to one
     utterance-level sequence), but scored with `gop_sf` instead of
     Viterbi-alignment posterior-deficit. Returns
     `{"word_gop": [...], "phone_gop": [[...], ...]}` in the same shape as
-    `align_words_gop`, so it's a drop-in swap in eval scripts."""
+    `align_words_gop`, so it's a drop-in swap in eval scripts. `model_id`:
+    see `align_words_gop`."""
     samples = np.ascontiguousarray(samples, dtype=np.float32)
     if samples.max(initial=0.0) > 1.0 or samples.min(initial=0.0) < -1.0:
         samples = samples / 32768.0
@@ -353,8 +398,8 @@ def align_words_gop_sf(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
 
         samples = np.asarray(resample(samples, sr, SAMPLE_RATE), dtype=np.float32)
 
-    _session(use_int8)
-    lp = _logprobs(samples, use_int8)
+    _session(model_id, use_int8)
+    lp = _logprobs(samples, model_id, use_int8)
 
     flat, spans, phone_texts = [], [], []
     for w in words:

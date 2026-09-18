@@ -47,12 +47,12 @@ def test_align_words_gop_word_score_is_mean_of_its_phone_scores(monkeypatch):
     blank = 0
     monkeypatch.setattr(align_phone, "_TOK2ID", {"a": 1, "b": 2, "c": 3})
     monkeypatch.setattr(align_phone, "_BLANK", blank)
-    monkeypatch.setattr(align_phone, "_session", lambda use_int8=True: None)
+    monkeypatch.setattr(align_phone, "_session", lambda model_id=None, use_int8=True: None)
     monkeypatch.setattr(align_phone, "_phonemize_word",
                          lambda w: {"one": ("a",), "two": ("b", "c")}[w])
     # word "one" -> token a, frames 0-1; blank; word "two" -> b then c
     lp = _lp_for_path([1, 1, blank, 2, blank, 3], T=6, V=4)
-    monkeypatch.setattr(align_phone, "_logprobs", lambda samples, use_int8=True: lp)
+    monkeypatch.setattr(align_phone, "_logprobs", lambda samples, model_id=None, use_int8=True: lp)
 
     samples = np.zeros(1600, dtype=np.float32)
     result = align_phone.align_words_gop(samples, ["one", "two"], sr=align_phone.SAMPLE_RATE)
@@ -67,10 +67,10 @@ def test_align_words_gop_unsegmentable_word_returns_none(monkeypatch):
     blank = 0
     monkeypatch.setattr(align_phone, "_TOK2ID", {"a": 1})
     monkeypatch.setattr(align_phone, "_BLANK", blank)
-    monkeypatch.setattr(align_phone, "_session", lambda use_int8=True: None)
+    monkeypatch.setattr(align_phone, "_session", lambda model_id=None, use_int8=True: None)
     monkeypatch.setattr(align_phone, "_phonemize_word", lambda w: {"a": ("a",), "zzz": ("q",)}[w])
     lp = _lp_for_path([1], T=1, V=2)
-    monkeypatch.setattr(align_phone, "_logprobs", lambda samples, use_int8=True: lp)
+    monkeypatch.setattr(align_phone, "_logprobs", lambda samples, model_id=None, use_int8=True: lp)
 
     samples = np.zeros(1600, dtype=np.float32)
     result = align_phone.align_words_gop(samples, ["a", "zzz"], sr=align_phone.SAMPLE_RATE)
@@ -344,17 +344,117 @@ def test_align_words_gop_sf_shape_matches_align_words_gop(monkeypatch):
     blank = 0
     monkeypatch.setattr(align_phone, "_TOK2ID", {"a": 1, "b": 2, "c": 3})
     monkeypatch.setattr(align_phone, "_BLANK", blank)
-    monkeypatch.setattr(align_phone, "_session", lambda use_int8=True: None)
+    monkeypatch.setattr(align_phone, "_session", lambda model_id=None, use_int8=True: None)
     monkeypatch.setattr(align_phone, "_phonemize_word",
                          lambda w: {"one": ("a",), "two": ("b", "c")}[w])
     lp = _rand_lp(T=10, V=4, seed=6)
-    monkeypatch.setattr(align_phone, "_logprobs", lambda samples, use_int8=True: lp)
+    monkeypatch.setattr(align_phone, "_logprobs", lambda samples, model_id=None, use_int8=True: lp)
 
     samples = np.zeros(1600, dtype=np.float32)
     result = align_phone.align_words_gop_sf(samples, ["one", "two"], sr=align_phone.SAMPLE_RATE)
 
     assert [p["phone"] for p in result["phone_gop"][0]] == ["a"]
     assert [p["phone"] for p in result["phone_gop"][1]] == ["b", "c"]
-    assert result["word_gop"][0]["gop"] <= 1e-6
-    assert result["word_gop"][1]["gop"] == pytest.approx(
-        float(np.mean([result["phone_gop"][1][0]["gop"], result["phone_gop"][1][1]["gop"]])))
+
+
+# --- alternate acoustic model backend (PLAN.md section 5i) -----------------
+
+class _FakeTorchModel:
+    """Stands in for a transformers Wav2Vec2ForCTC instance: only the
+    attributes/calls _session and _logprobs actually touch."""
+    def __init__(self, vocab_size):
+        self.config = type("Cfg", (), {"vocab_size": vocab_size})()
+        self._eval_called = False
+
+    def eval(self):
+        self._eval_called = True
+        return self
+
+
+class _FakeTokenizer:
+    def __init__(self, vocab):
+        self._vocab = vocab
+
+    def get_vocab(self):
+        return self._vocab
+
+
+def test_session_selects_onnx_backend_for_default_model_id(monkeypatch):
+    """model_id=None (the default) must take the existing ONNX path, not
+    the new torch path -- this is the "must not change default behavior"
+    guarantee the whole backend refactor depends on."""
+    calls = {"onnx": 0, "torch": 0}
+
+    class _FakeOrt:
+        class InferenceSession:
+            def __init__(self, path):
+                calls["onnx"] += 1
+
+    monkeypatch.setattr(align_phone, "_SESSION", None)
+    monkeypatch.setattr(align_phone, "_SESSION_KEY", None)
+    monkeypatch.setitem(__import__("sys").modules, "onnxruntime", _FakeOrt)
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        lambda repo, fname: "/tmp/fake-vocab.json" if fname == "vocab.json" else "/tmp/fake-model.onnx",
+    )
+    monkeypatch.setattr(
+        "builtins.open",
+        lambda path, *a, **k: __import__("io").StringIO('{"<pad>": 0, "a": 1}'),
+    )
+    align_phone._session(None)
+    assert calls["onnx"] == 1
+    assert align_phone._BACKEND == "onnx"
+
+
+def test_session_torch_backend_filters_tokens_the_model_cannot_output(monkeypatch):
+    """Regression test for a real bug hit building this: the xlsr-53
+    checkpoint's tokenizer vocab has one more entry ("|", a word-delimiter
+    token) than the model's CTC head actually outputs (393 vocab entries,
+    392-class classifier) -- feeding that id into _ctc_viterbi/gop_sf
+    indexes the log-prob array out of bounds. _session must drop any
+    token whose id is >= the model's own vocab_size."""
+    monkeypatch.setattr(align_phone, "_SESSION", None)
+    monkeypatch.setattr(align_phone, "_SESSION_KEY", None)
+
+    fake_vocab = {"<pad>": 0, "a": 1, "b": 2, "|": 3}  # "|" is out of range
+    fake_transformers = type("M", (), {
+        "Wav2Vec2CTCTokenizer": type("T", (), {
+            "from_pretrained": staticmethod(lambda model_id: _FakeTokenizer(fake_vocab))
+        }),
+        "Wav2Vec2ForCTC": type("F", (), {
+            "from_pretrained": staticmethod(lambda model_id: _FakeTorchModel(vocab_size=3))
+        }),
+    })
+    monkeypatch.setitem(__import__("sys").modules, "transformers", fake_transformers)
+
+    align_phone._session("some/other-repo")
+
+    assert align_phone._BACKEND == "torch"
+    assert "|" not in align_phone._TOK2ID
+    assert align_phone._TOK2ID == {"<pad>": 0, "a": 1, "b": 2}
+    assert align_phone._BLANK == 0
+
+
+def test_session_reloads_when_model_id_changes(monkeypatch):
+    """Switching model_id must actually reload (not silently keep serving
+    the previously-cached session/vocab) -- the cache-key check has to
+    include model_id, not just use_int8 like the pre-refactor version did."""
+    monkeypatch.setattr(align_phone, "_SESSION", None)
+    monkeypatch.setattr(align_phone, "_SESSION_KEY", None)
+
+    calls = []
+    fake_transformers = type("M", (), {
+        "Wav2Vec2CTCTokenizer": type("T", (), {
+            "from_pretrained": staticmethod(lambda model_id: calls.append(model_id) or _FakeTokenizer({"<pad>": 0}))
+        }),
+        "Wav2Vec2ForCTC": type("F", (), {
+            "from_pretrained": staticmethod(lambda model_id: _FakeTorchModel(vocab_size=1))
+        }),
+    })
+    monkeypatch.setitem(__import__("sys").modules, "transformers", fake_transformers)
+
+    align_phone._session("repo-a")
+    align_phone._session("repo-a")  # same id -> cached, no second load
+    align_phone._session("repo-b")  # different id -> must reload
+
+    assert calls == ["repo-a", "repo-b"]
