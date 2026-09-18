@@ -200,10 +200,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paper's full-vocabulary version). Landed on tracking each candidate's
   likelihood in an independent "lane" through the wildcard state's
   self-loop, merged only at entry/exit -- O(T*(S+V)) per phone position,
-  matching the paper's complexity, full ~392-symbol vocabulary. ~1.5-4s
-  per utterance (vs. posterior-deficit's single Viterbi pass), so
-  evaluation-only, not wired into `--engine gop-lite`. Full-corpus
-  results pending.
+  matching the paper's complexity, full ~392-symbol vocabulary. Measured
+  0.79-0.83s/utterance on full-corpus runs (vs. posterior-deficit's single
+  Viterbi pass), so evaluation-only, not wired into `--engine gop-lite`.
+  **Full-corpus result:** the mechanism works as predicted -- pooled over
+  all 24 L2-ARCTIC speakers, substitution and correct phones had the
+  exact same median GOP under posterior-deficit (0.0 = 0.0); under GOP-SF
+  they separate for the first time (-0.223 vs. -0.061). But the aggregate
+  correlation gain is modest and every CI overlaps its posterior-deficit
+  counterpart (so762 phone reconciled: 0.441 vs. 0.433; L2-ARCTIC pooled:
+  0.233 vs. 0.224) -- consistent with a small real improvement, not
+  proof of one; a proper paired significance test (same items, same
+  script, mirroring `scripts/eval_so762_paired.py`) wasn't run yet.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`

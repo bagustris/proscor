@@ -1397,16 +1397,72 @@ trusted, not after:
    position, matching the paper's stated complexity; verified against
    brute-force enumeration over the *full* (not restricted) candidate set.
 
-**Cost:** ~1.5s/utterance synthetic (T=300 frames, V=392, 40 phones),
-2-4s/utterance measured on real L2-ARCTIC audio — two to three orders of
-magnitude slower than posterior-deficit's single Viterbi pass, but
-affordable for a background full-corpus run (not for interactive
-`--engine gop-lite` use; `align_words_gop_sf` stays evaluation-only,
-same as `align_words_gop`).
+**Cost, measured on the real model (not estimated):** so762 full test
+split (2,500 utterances) ran in 2,065s = 0.83s/utterance; L2-ARCTIC full
+corpus (3,599 utterances, 24 speakers) ran in 2,835s = 0.79s/utterance.
+Both are full background runs, not a projection — roughly 2-3 orders of
+magnitude slower than posterior-deficit's single Viterbi pass per
+utterance, same order as the earlier synthetic/small-sample estimate, but
+easily affordable for a corpus-scale run (still evaluation-only, not
+wired into `--engine gop-lite`).
 
-**Result: pending** — `--engine sf` full-corpus runs on speechocean762
-and L2-ARCTIC phone-level, compared against `--engine posterior`'s 0.433
-and 0.206/0.224, are queued next.
+**Result: the mechanism works exactly as predicted, but the aggregate
+correlation gain is modest, not transformative.**
+
+The direct test of the hypothesis — does GOP-SF separate substitutions
+from correct phones where posterior-deficit couldn't — is unambiguous.
+Pooled over all 24 L2-ARCTIC speakers (`results/l2arctic_phone_sf.json`
+vs. `l2arctic_phone_full.json`, same phones, same reconciliation):
+
+| tag | posterior-deficit mean / median | GOP-SF mean / median |
+|---|---|---|
+| correct | -0.359 / **0.0** | -0.571 / -0.061 |
+| substitution | -1.062 / **0.0** | -1.413 / -0.223 |
+| deletion | -2.832 / -0.662 | -3.121 / -1.586 |
+
+Under posterior-deficit, substitution and correct phones had the *exact
+same* median (0.0 = 0.0, not just close) — the literal blind spot section
+5c/5e kept finding. Under GOP-SF, they're separated (-0.061 vs. -0.223,
+a real if modest gap) for the first time. Deletions also separate more
+clearly (median gap from correct widens from 0.662 to 1.525). This
+confirms the mechanism: marginalizing over every alignment instead of
+scoring one Viterbi path does catch confidently-wrong substitutions that
+posterior-deficit structurally missed.
+
+**But this only moved the aggregate correlation a little, with heavily
+overlapping CIs (no paired significance test run yet — see below):**
+
+| metric | posterior-deficit r (CI) | GOP-SF r (CI) |
+|---|---|---|
+| so762 word-level | 0.325 (0.264-0.382) | 0.338 (0.275-0.396) |
+| so762 utterance-level | 0.536 | 0.560 |
+| so762 phone, matched-only | 0.425 (0.380-0.467) | 0.432 (0.387-0.475) |
+| so762 phone, reconciled | 0.433 (0.387-0.477) | 0.441 (0.395-0.486) |
+| so762 phone, reconciled binarized | 0.337 (0.305-0.370) | 0.354 (0.320-0.388) |
+| L2-ARCTIC phone, pooled (24 speakers) | 0.224 (0.159-0.280) | 0.233 (0.169-0.287) |
+
+Every number moved in the right direction, none by much, and every pair
+of CIs overlaps substantially — these should be read as "consistent with
+a small real improvement" not "GOP-SF proven better." A proper answer
+needs the same paired, speaker-cluster bootstrap used everywhere else in
+this plan (section 5d), scoring both engines on the *same* items in one
+run (mirroring `scripts/eval_so762_paired.py`) rather than comparing two
+separately-bootstrapped marginal CIs — not done here (each full-corpus
+run already takes 35-47 minutes single-engine; a paired run scores both
+engines per item, roughly doubling that). Noted as the natural next step,
+not run yet.
+
+**Why the aggregate gain is modest despite the clean mechanistic fix:**
+substitutions are 80-93% of all errors in every L1 (section 5d), but even
+under GOP-SF the median substitution deficit (-0.223) is still an order
+of magnitude smaller than the median deletion deficit (-1.586) — GOP-SF
+fixed the *structural* blindness (substitutions are no longer
+indistinguishable from correct at the median) without closing most of
+the *magnitude* gap to deletions. A confidently-produced wrong phone
+apparently still costs less log-likelihood, on the model's own terms,
+than an outright missing one — which may be a genuine acoustic fact
+about this model and these substitution errors (many are subtle,
+phonetically close swaps, e.g. θ→s) rather than a remaining bug.
 
 ---
 
