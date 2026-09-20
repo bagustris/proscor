@@ -1820,6 +1820,78 @@ two models are compared in one script, not just for this test.
 
 ---
 
+### 5j. Closing the UME-ERJ question with J-AESOP: BPE wins for Japanese too
+
+Section 5g identified J-AESOP as the strongest remaining lead for the
+open question — is the section 5b/5e UME-ERJ flip (phone model beats
+BPE) about Japanese-L1 pronunciation specifically, or about UME-ERJ's
+own holistic-rating methodology (or its recording acoustics, section
+5g's peakiness finding)? Access came through
+(github.com/J-AESOP/CorpusData) before the access-request email drafted
+in 5g was needed.
+
+**The corpus, confirmed by inspection, not just the paper.** 180
+Japanese-L1 speakers (matches the paper exactly), each reading the same
+fixed "North Wind and the Sun" passage (Task 6_01), with real word-level
+error tags from 7 trained phoneticians: the Word tier's plain intervals
+are correct productions; `(SBT)CANON->PERCEIVED` and `(DVN)CANON` mark a
+substitution/deviant pronunciation; `(RPT)`/`(DSF)`/`(INS)` are repair
+attempts, disfluencies, and insertions with no resolved outcome; the
+Misc tier's `(DLT)CANON` points mark a canonical word omitted entirely.
+This is confirmed richer than L2-ARCTIC's phone-level tags are *not*
+present here (the paper states phone-level relabeling wasn't done,
+"unnecessary for acoustic analysis") — but the word-level granularity is
+exactly what section 5e/5h's L2-ARCTIC clean-label comparison already
+used, making this a direct, like-for-like extension to a seventh L1.
+
+**Label derivation validated against the corpus before trusting it**
+(`scripts/eval_jaesop_word.py`): tags matched greedily against a
+hardcoded copy of the canonical passage (cross-checked word-for-word
+against the corpus's own tag-free files). 99.6% of canonical positions
+across all 180 files matched cleanly (20,251/20,340); the 0.4% that
+didn't cluster in a handful of files with genuine word-order
+self-corrections in natural speech ("when traveler... a traveler"), not
+a parser bug — those positions get no label and are excluded.
+
+**Result: BPE beats phone for Japanese-L1 too, at the largest sample of
+any single-L1 test in this plan** (180 speakers, 20,251 words, zero
+failures):
+
+| | r | 95% CI |
+|---|---|---|
+| BPE | 0.215 | 0.152–0.282 |
+| phone | 0.080 | 0.061–0.100 |
+| paired diff | +0.135 | 0.077–0.195, **significant** |
+
+This is the same pattern speechocean762 (Mandarin) and all six L2-ARCTIC
+L1s showed — BPE wins with clean labels. Japanese-L1 does not show the
+phone model winning once the label is a clean error tag instead of a
+holistic rating. Combined with section 5e (age ruled out: BPE wins in
+both speechocean762 age groups) and section 5h (L1-in-general ruled out:
+BPE wins in all six L2-ARCTIC L1s), **Japanese-L1 pronunciation itself is
+now also ruled out** as the driver of the UME-ERJ flip — it's the fourth
+variable checked (age, L1-in-general, Japanese-L1-specifically) and the
+fourth to come back "no."
+
+**What's still needed to fully close the loop, in progress:**
+`scripts/eval_jaesop_rating.py` scores the *same* 180 speakers' *same*
+recordings against J-AESOP's own holistic 1-10 segmental/prosody/
+fluency/nativelikeness ratings (`Documents/Rating6_01.csv`) — the same
+category structure UME-ERJ uses. This is the first comparison anywhere
+in this plan that can test methodology on literally identical audio
+rather than across different corpora with different speakers. If it
+shows phone winning (matching UME-ERJ), that's about as close to a
+controlled A/B test as this question will get: same speakers, same L1,
+same recordings, only the label type differs. Result pending — see
+below once it lands. (Granularity note: ratings are per-section, but
+section time boundaries aren't reliably re-derivable from the TextGrid
+without guessing at pause-based splits, so this compares one holistic
+score per speaker against one whole-passage GOP mean — sentence-level,
+not word-level, a real loss of resolution but the safe choice over
+risking a wrong boundary guess.)
+
+---
+
 ## 6. CLI commands summary  (completing the empty section from the old plan)
 
 ```bash

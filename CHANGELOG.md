@@ -310,6 +310,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requires) -- a ~3s/utterance rate, ~10x too slow. Fixed by caching
   every `(model_id, use_int8)` `_session` has ever loaded, not just the
   most recent one (regression test added).
+- **Closing the UME-ERJ question with J-AESOP** (`scripts/eval_jaesop_word.py`,
+  `eval_jaesop_rating.py`; PLAN.md section 5j). User obtained access to
+  github.com/J-AESOP/CorpusData -- 180 Japanese-L1 speakers reading a
+  fixed passage with real word-level error tags from 7 trained
+  phoneticians (label-derivation logic validated against the corpus:
+  99.6% of canonical positions matched cleanly across all 180 files).
+  **Result: BPE beats phone for Japanese-L1 too** (r=0.215 vs. 0.080,
+  paired diff +0.135, CI 0.077-0.195, significant) -- the same pattern
+  every other L1 tested in this plan shows, at the largest single-L1
+  sample here (180 speakers). Combined with section 5e (age ruled out)
+  and 5h (L1-in-general ruled out), Japanese-L1 pronunciation itself is
+  now also ruled out as the UME-ERJ flip's driver. A second script scores
+  the *same* speakers/recordings against J-AESOP's own holistic ratings
+  (matching UME-ERJ's category structure) -- the first same-audio
+  methodology test in this plan; result pending.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
