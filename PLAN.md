@@ -1873,22 +1873,47 @@ now also ruled out** as the driver of the UME-ERJ flip — it's the fourth
 variable checked (age, L1-in-general, Japanese-L1-specifically) and the
 fourth to come back "no."
 
-**What's still needed to fully close the loop, in progress:**
-`scripts/eval_jaesop_rating.py` scores the *same* 180 speakers' *same*
-recordings against J-AESOP's own holistic 1-10 segmental/prosody/
-fluency/nativelikeness ratings (`Documents/Rating6_01.csv`) — the same
-category structure UME-ERJ uses. This is the first comparison anywhere
-in this plan that can test methodology on literally identical audio
-rather than across different corpora with different speakers. If it
-shows phone winning (matching UME-ERJ), that's about as close to a
-controlled A/B test as this question will get: same speakers, same L1,
-same recordings, only the label type differs. Result pending — see
-below once it lands. (Granularity note: ratings are per-section, but
-section time boundaries aren't reliably re-derivable from the TextGrid
-without guessing at pause-based splits, so this compares one holistic
-score per speaker against one whole-passage GOP mean — sentence-level,
-not word-level, a real loss of resolution but the safe choice over
-risking a wrong boundary guess.)
+**Closing the loop: the same 180 speakers, the same recordings, scored
+against J-AESOP's own holistic ratings instead of clean tags —
+`scripts/eval_jaesop_rating.py` (`Documents/Rating6_01.csv`, the same
+segmental/prosody/fluency/nativelikeness categories UME-ERJ uses;
+sentence-level granularity — one holistic score and one whole-passage
+GOP mean per speaker, per the granularity note above). The ranking
+flips completely, every category, all significant:**
+
+| category | BPE r | phone r | paired diff (CI) |
+|---|---|---|---|
+| Segmental | 0.390 | **0.760** | -0.370 (-0.436 to -0.126) |
+| Prosody | 0.341 | **0.736** | -0.395 (-0.485 to -0.115) |
+| Fluency | 0.303 | **0.665** | -0.362 (-0.462 to -0.073) |
+| Nativelikeness | 0.365 | **0.741** | -0.376 (-0.451 to -0.114) |
+
+**This is the cleanest result in the whole investigation, and it answers
+the section 5b/5e/5g/5j question directly: it's methodology, not L1.**
+Same 180 speakers. Same recordings. Same L1. Only the label changes —
+clean word-level error tags vs. holistic perceptual ratings — and the
+engine ranking inverts completely, with effect sizes (0.36-0.39) far
+larger than any other paired-diff result in this plan (the next-largest,
+section 5i's xlsr-53-vs-lv60 Hindi result, was 0.127). Every other
+comparison in this plan that varied L1 or corpus alongside methodology
+left open the possibility that *something else* about UME-ERJ (its
+speakers, its recording setup, its L1 mix) was doing the work; holding
+everything constant except which label type scores the identical audio
+removes that possibility entirely.
+
+**Where this leaves sections 5b/5e/5g/5h/5j together:** the phone model
+is not better at detecting Japanese-accented (or any other L1's)
+pronunciation errors in any objective sense checked here — every
+clean-label test in this plan (speechocean762, all six L2-ARCTIC L1s,
+now Japanese via J-AESOP) shows BPE ahead. What the phone model's
+posterior-deficit GOP evidently tracks better is *something correlated
+with holistic human impressions of prosody, fluency, and nativelikeness*
+— section 5g's peakiness finding (posterior-deficit GOP is far less
+saturated on UME-ERJ-style audio than on L2-ARCTIC-style audio) is a
+plausible mechanistic piece of why, but the clean methodology-vs-L1
+disentangling this section set out to do is now done: it's the rating
+methodology, checked directly, not inferred from a process of
+elimination across mismatched corpora.
 
 ---
 

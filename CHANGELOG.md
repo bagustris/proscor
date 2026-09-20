@@ -321,10 +321,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every other L1 tested in this plan shows, at the largest single-L1
   sample here (180 speakers). Combined with section 5e (age ruled out)
   and 5h (L1-in-general ruled out), Japanese-L1 pronunciation itself is
-  now also ruled out as the UME-ERJ flip's driver. A second script scores
-  the *same* speakers/recordings against J-AESOP's own holistic ratings
-  (matching UME-ERJ's category structure) -- the first same-audio
-  methodology test in this plan; result pending.
+  now also ruled out as the UME-ERJ flip's driver. **A second script
+  scored the same 180 speakers' same recordings against J-AESOP's own
+  holistic ratings, and the ranking inverts completely**: phone beats
+  BPE on all four categories (Segmental 0.760 vs. 0.390, Prosody 0.736
+  vs. 0.341, Fluency 0.665 vs. 0.303, Nativelikeness 0.741 vs. 0.365),
+  every paired diff significant, effect sizes (0.36-0.39) the largest
+  anywhere in this plan. Same speakers, same recordings, same L1 -- only
+  the label type changes. This is the cleanest, most direct answer this
+  plan has gotten to the section 5b/5e/5g open question: the UME-ERJ
+  flip is about rating methodology, not L1, checked directly rather than
+  inferred by elimination across mismatched corpora.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`
