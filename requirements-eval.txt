@@ -13,3 +13,9 @@ torch>=2.0        # only for proscor.align_phone's TORCH_MODEL_REPO path
                   # ONNX/lv-60 path, CPU-only wheel is fine
                   # (pip install torch --index-url https://download.pytorch.org/whl/cpu)
 transformers>=4.40  # loads TORCH_MODEL_REPO checkpoints; same scope as torch above
+lhotse>=1.30       # only for proscor.align_phone's ZIPA_MODEL_REPO path
+                   # (PLAN.md section 5k): its fbank feature frontend, not
+                   # needed for the other two backends (raw waveform)
+librosa>=0.10      # transitive need of the zipa evaluation path (resampling
+                   # helper used alongside lhotse); not imported by
+                   # proscor.align_phone itself

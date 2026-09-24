@@ -465,3 +465,116 @@ def test_session_caches_every_model_not_just_the_most_recent(monkeypatch):
     assert calls == ["repo-a", "repo-b"]  # each repo loaded exactly once, ever
 
     assert calls == ["repo-a", "repo-b"]
+
+
+# --- ZIPA backend: char-decomposed IPA vocab (PLAN.md section 5k) ----------
+
+def test_word_phone_spans_onnx_backend_is_one_token_per_phone(monkeypatch):
+    """Non-zipa backends: _word_phone_spans must be a thin wrapper around
+    _word_phones_and_ids, every span length 1 -- the "must not change
+    default behavior" guarantee the whole multi-token-span generalization
+    depends on."""
+    monkeypatch.setattr(align_phone, "_BACKEND", "onnx")
+    monkeypatch.setattr(align_phone, "_TOK2ID", {"k": 1, "æ": 2, "t": 3})
+    monkeypatch.setattr(align_phone, "_phonemize_word", lambda w: ("k", "æ", "t"))
+    phones, ids, spans = align_phone._word_phone_spans("cat")
+    assert phones == ["k", "æ", "t"]
+    assert ids == [1, 2, 3]
+    assert spans == [(0, 1), (1, 2), (2, 3)]
+
+
+def test_word_phone_spans_zipa_backend_decomposes_multichar_phone(monkeypatch):
+    """zipa backend: a phone espeak emits as one multi-codepoint IPA string
+    ("ɑːɹ") must expand into a span covering each of its characters'
+    separate token ids, in order -- the char-level vocab ZIPA's tokens.txt
+    actually uses (base letter, length mark, rhotic hook each their own
+    entry)."""
+    monkeypatch.setattr(align_phone, "_BACKEND", "zipa")
+    monkeypatch.setattr(align_phone, "_TOK2ID", {"m": 1, "ɑ": 2, "ː": 3, "ɹ": 4, "k": 5})
+    monkeypatch.setattr(align_phone, "_phonemize_word", lambda w: ("m", "ɑːɹ", "k"))
+    phones, ids, spans = align_phone._word_phone_spans("mark")
+    assert phones == ["m", "ɑːɹ", "k"]
+    assert ids == [1, 2, 3, 4, 5]
+    assert spans == [(0, 1), (1, 4), (4, 5)]
+
+
+def test_word_phone_spans_zipa_backend_drops_phone_with_no_known_chars(monkeypatch):
+    """A phone whose IPA characters are *all* missing from ZIPA's 127-symbol
+    vocab is dropped entirely, from both the phone-text and token lists in
+    lockstep -- mirroring _word_phones_and_ids's drop-together behavior for
+    the other backends, and keeping `phones`/`spans` index-aligned."""
+    monkeypatch.setattr(align_phone, "_BACKEND", "zipa")
+    monkeypatch.setattr(align_phone, "_TOK2ID", {"k": 1, "æ": 2})
+    monkeypatch.setattr(align_phone, "_phonemize_word", lambda w: ("k", "??", "æ"))
+    phones, ids, spans = align_phone._word_phone_spans("cat")
+    assert phones == ["k", "æ"]
+    assert ids == [1, 2]
+    assert spans == [(0, 1), (1, 2)]
+
+
+def test_leading_marker_prefix_only_for_zipa_backend(monkeypatch):
+    """The utterance-initial "▁" prefix (see module docstring / PLAN.md
+    section 5k) is a zipa-only concept -- a no-op for the other two
+    backends, which have no such symbol in their vocab."""
+    monkeypatch.setattr(align_phone, "_BACKEND", "zipa")
+    monkeypatch.setattr(align_phone, "_TOK2ID", {"▁": 3, "m": 1})
+    assert align_phone._leading_marker_prefix() == [3]
+
+    monkeypatch.setattr(align_phone, "_BACKEND", "onnx")
+    monkeypatch.setattr(align_phone, "_TOK2ID", {"m": 1})
+    assert align_phone._leading_marker_prefix() == []
+
+    monkeypatch.setattr(align_phone, "_BACKEND", "zipa")
+    monkeypatch.setattr(align_phone, "_TOK2ID", {"m": 1})  # no "▁" entry
+    assert align_phone._leading_marker_prefix() == []
+
+
+def test_align_words_gop_zipa_multitoken_phone_is_frame_weighted_mean(monkeypatch):
+    """End-to-end (stubbed model) check that a multi-token phone's GOP under
+    align_words_gop is the frame-weighted mean across its own token/state
+    range, not (say) an unweighted mean of per-token means -- the
+    generalization align_words_gop needed to support ZIPA's char-decomposed
+    phones without changing behavior for the other two backends (see the
+    "one token" test above, which confirms this reduces to the old code
+    there). Flat sequence (after the leading "▁"): m, a, k -- extended CTC
+    states 0..8 = blank,▁,blank,m,blank,a,blank,k,blank. Uses T=10 frames
+    (one more than the 9 states) so state 5 ("a") can legally occupy 2
+    frames via its self-loop, matching a real multi-frame phone."""
+    blank = 0
+    monkeypatch.setattr(align_phone, "_BACKEND", "zipa")
+    monkeypatch.setattr(align_phone, "_TOK2ID", {"▁": 1, "m": 2, "a": 3, "k": 4})
+    monkeypatch.setattr(align_phone, "_BLANK", blank)
+    monkeypatch.setattr(align_phone, "_session", lambda model_id=None, use_int8=True: None)
+    monkeypatch.setattr(align_phone, "_phonemize_word", lambda w: {"ma": ("m", "ak")}[w])
+
+    V = 5
+    lp = np.full((10, V), -30.0)
+    # state0 blank, state1 "▁", state2 blank, state3 "m", state4 blank:
+    # frames 0-4, each cleanly hot on its own token.
+    for t, tok in enumerate([blank, 1, blank, 2, blank]):
+        lp[t, tok] = 0.0
+    # state5 "a": frames 5-6 (2 frames via self-loop). Frame 5 is
+    # deliberately imperfect: some other token (4, "k" -- irrelevant to the
+    # true topology at this position, just a distractor) is *this frame's*
+    # argmax at 0.0, with "a" present but 5.0 nats behind, so GOP there is
+    # a genuine -5.0 deficit (not 0, which is what "a" being its own
+    # frame's argmax would give regardless of its absolute log-prob).
+    # Frame 6 is clean (no distractor, "a" is the argmax).
+    lp[5, 4], lp[5, 3] = 0.0, -5.0
+    lp[6, 3] = 0.0
+    # state6 blank, state7 "k", state8 blank: frames 7-9, clean.
+    for t, tok in enumerate([blank, 4, blank], start=7):
+        lp[t, tok] = 0.0
+    monkeypatch.setattr(align_phone, "_logprobs", lambda samples, model_id=None, use_int8=True: lp)
+
+    samples = np.zeros(1600, dtype=np.float32)
+    result = align_phone.align_words_gop(samples, ["ma"], sr=align_phone.SAMPLE_RATE)
+
+    phone_gop = result["phone_gop"][0]
+    assert [p["phone"] for p in phone_gop] == ["m", "ak"]
+    assert phone_gop[0]["gop"] == pytest.approx(0.0, abs=1e-6)  # "m": single clean frame
+    # "ak" = state5("a", 2 frames: pgop -5.0 and 0.0 -> state mean -2.5) +
+    # state7("k", 1 frame: pgop 0.0). Frame-weighted mean over 3 frames:
+    # (-2.5*2 + 0.0*1) / 3 = -5/3, NOT a naive mean of (-2.5, 0.0) = -1.25.
+    assert phone_gop[1]["gop"] == pytest.approx(-5.0 / 3, abs=1e-6)
+    assert phone_gop[1]["n_frames"] == 3

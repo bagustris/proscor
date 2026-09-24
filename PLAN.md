@@ -1917,6 +1917,374 @@ elimination across mismatched corpora.
 
 ---
 
+### 5k. Closing the gap to "real GOP": a literature/backbone search, and a ZIPA backend prototype
+
+With the UME-ERJ question closed (5j) and no remaining open dataset-side
+question, the next lever is performance itself: can the zero-shot
+(no-trained-regressor) approach get closer to literature/supervised-GOP
+correlations via a better acoustic backbone or a different scoring
+paradigm, without training anything? This section covers a literature
+search across both axes, what it ruled in/out, and the first concrete
+attempt: swapping in a newer, more heavily phone-pretrained CTC backbone.
+
+**Ruled out, with evidence, not just by inapplicability:**
+- *Whisper confusion-network GOP* (Wong & Chen, arXiv:2603.25150, Mar
+  2026) solves a problem this project doesn't have (extracting
+  phoneme-level posteriors from a frame-*asynchronous* weakly-supervised
+  model); every one of its reported numbers depends on a *trained*
+  downstream SVR/transformer scorer, disqualified by the no-trained-model
+  constraint.
+- *Zero-shot-TTS golden speech + DTW* (arXiv:2409.07151) reports PCC
+  −0.77/−0.88 (L2-ARCTIC/so762) between raw DTW cost and proficiency —
+  but checking the premise before believing it: that's a **speaker-level
+  aggregate**. Computed the matched comparison on this project's own
+  so762 results (`results/so762_phone_paired.json.arrays.json`):
+  GOP-lite's own item-level so762 utterance-total-score correlation
+  (posterior 0.572, SF 0.597) rises to **0.817/0.827 at speaker-level
+  aggregation** — the same inflation the golden-speech paper's number
+  shows. The "gap" was mostly an aggregation artifact, not a real method
+  advantage. (Also: `sherox`, this project's TTS, isn't a zero-shot voice
+  cloner, so the paper's "golden speech in the learner's own voice"
+  mechanism isn't cheaply available regardless.)
+- *MMS zero-shot ASR* outputs romanized words via n-gram-LM decoding, not
+  phone posteriors in a usable format — no candidate checkpoint found.
+
+**Still live, not yet implemented:** McIntosh, Smit, Saito, Minematsu &
+Kamper, "Self-supervised Speech Comparison for L2 Phone, Rhythm, and
+Intonation Scoring" (arXiv:2607.13721, Jul 2026) — DTW over WavLM-Large
+embeddings against native reference recordings (cosine distance,
+path-length normalized, ≤5 templates recover ≥95% of full-template
+agreement), fully training-free for the phone-scoring variant. Their ERJ
+(same underlying database family as this project's UME-ERJ — Minematsu
+co-authors both) sentence-level phonetic-accuracy Pearson r = **0.576**,
+vs. this project's own UME-ERJ segmental/sentence phone-model PCC of
+**0.432** (section 5b, n=1,900) — a real, same-corpus-family gap (not a
+tied or cross-corpus-only comparison), and their DTW-over-raw-SSL beat
+their own DTW-over-phone-posteriors baseline (0.576 vs. 0.369), meaning
+it captures something GOP's phonetic posteriors structurally can't
+(duration/prosody). Practical path: native reference recordings exist
+without needing TTS for L2-ARCTIC (CMU ARCTIC's own native readers,
+bdl/slt) and UME-ERJ (its 20 American reference speakers); not for
+so762. Queued as the next candidate after this section's ZIPA result.
+
+**ZIPA backend prototype (in progress):** Zhu et al. (ACL 2025)'s ZIPA
+(`anyspeech/zipa-large-crctc-ns-800k`, a Zipformer-CTC phone recognizer
+trained on IPAPack++: 17k phone-labeled + 11.8k pseudo-labeled hours, 88
+languages) is an order of magnitude more phone-labeled pretraining data
+than TORCH_MODEL_REPO's espeak-cv-ft fine-tune — a direct extension of
+section 5i's "more multilingual phone-labeled pretraining helps" result.
+Added as a third backend in `proscor/align_phone.py`
+(`ZIPA_MODEL_REPO`), alongside the existing ONNX (lv-60) and torch
+(xlsr-53) paths:
+- **Different frontend:** 80-dim fbank via `lhotse` (optional dep), not
+  raw waveform — `_logprobs` branches on `_BACKEND == "zipa"` before
+  wav2vec2's amplitude normalization, which doesn't apply here.
+- **Different vocabulary granularity:** ZIPA's 127-symbol CTC vocab is
+  *IPA characters* (each base letter and each diacritic/length-mark its
+  own token), not *IPA phones* — a phone espeak emits as one
+  multi-codepoint string (e.g. "ɑːɹ") is 1-3 separate ZIPA tokens.
+  Espeak's own codepoint boundaries coincide with ZIPA's token
+  boundaries directly (no remapping table needed — confirmed by
+  inspection of `tokens.txt`'s 127 entries against espeak's IPA output).
+  Handled by generalizing "one token per phone" to "one *span* of 1+
+  tokens per phone" via a new `_word_phone_spans` helper:
+  `align_words_gop`/`align_words_gop_sf` now average (frame-weighted for
+  the Viterbi path; plain mean for GOP-SF's per-token scores) over
+  however many tokens a phone's span covers — 1 for the existing two
+  backends (mathematically identical to the prior one-token code, and
+  confirmed so: all 24 existing `tests/test_align_phone.py` tests pass
+  unchanged after the refactor), 1-3 for ZIPA.
+- **A real bug caught before any full-corpus run, not a false alarm:**
+  initial smoke testing showed a huge, isolated GOP-SF outlier at the
+  very first phone of an utterance only (e.g. "MARK"'s /m/: −52.7, vs.
+  −0.00 to −0.01 for the same phone under both other backends on the
+  same audio). Diagnosis (frame-by-frame log-prob inspection): ZIPA
+  emits a leading "▁" (SentencePiece word-boundary symbol) with >99%
+  confidence in the first few frames of *every* utterance, before the
+  first real phone — a real, systematic property of its output space,
+  not an artifact — which the canonical target sequence never included,
+  so the CTC marginalization blamed the canonical first phone for frames
+  the model spent on "▁" instead. Fixed by prepending `_TOK2ID["▁"]`
+  once per utterance (`_leading_marker_prefix`, a no-op for the other
+  two backends, which have no such symbol) — confirmed to bring the
+  outlier phone back in line with the other backends' values on the same
+  audio. Caught by comparing against the two known-good backends on
+  identical input before trusting any correlation number, the same
+  discipline that caught the GOP-SF per-frame-marginalization bug in
+  section 5f and the session-cache bug in section 5i.
+
+**A second real gap, also caught before trusting a number:** scanning
+every espeak phone speechocean762's 1,869 unique words produce against
+ZIPA's 127-symbol vocab found three atomic IPA codepoints with *no*
+token in ZIPA's vocab at all -- not rare edge cases: "ɚ" (the unstressed
+r-colored vowel, "-er" as in "mother"/"computer"/"teacher", in 186/1,869
+words, ~10%), "ɡ" (IPA "script g", U+0261, vs. ZIPA's ASCII "g",
+U+0067 -- a Unicode-convention mismatch for an extremely common phone,
+106 words), and "ᵻ" (espeak's "schwi", 91 words) -- together touching
+~21% of the vocabulary. `unicodedata.normalize("NFD", ...)` confirmed
+these have no standard decomposition, so they were silently dropped
+entire-phone (not approximated) by the plain per-character lookup.
+Fixed with a small `_ZIPA_CHAR_SUBS` substitution table ("ɡ"->"g",
+"ɚ"->"ə˞", "ɝ"->"ɜ˞", "ᵻ"->"ɪ", the last matching the same IH-equivalence
+`_ARPABET_EQUIV` already uses elsewhere in this file) applied before the
+per-character vocab lookup — confirmed to bring word-level vocab coverage
+from 1,479/1,869 words (79.1%) to 1,869/1,869 (100%).
+
+**Result, properly powered (n=250 utterances, 13 speaker clusters —
+above this project's 4-speaker minimum bar), after both bugs above were
+fixed** (`scripts/eval_so762_phone_zipa_paired.py`,
+`results/so762_phone_zipa_smoke250_v2.json`):
+
+| level | scoring | xlsr-53 r | ZIPA r | diff (ZIPA − xlsr-53) | significant |
+|---|---|---|---|---|---|
+| word | posterior-deficit | 0.233 | 0.231 | −0.002 | no |
+| word | GOP-SF | 0.252 | 0.246 | −0.006 | no |
+| phone (graded) | posterior-deficit | 0.384 | 0.286 | −0.098 | **yes** |
+| phone (graded) | GOP-SF | 0.395 | 0.302 | −0.093 | **yes** |
+| phone (binary) | posterior-deficit | 0.365 | 0.289 | −0.076 | **yes** |
+| phone (binary) | GOP-SF | 0.380 | 0.307 | −0.073 | **yes** |
+
+**ZIPA loses clearly and significantly at phone level** (both scoring
+formulas, both accuracy granularities), and ties at word level. This
+contradicts the a priori hypothesis that more phone-labeled pretraining
+data (IPAPack++'s 17k+11.8k hours vs. espeak-cv-ft's much smaller
+fine-tuning set) would extend section 5i's "more multilingual pretraining
+helps" finding.
+
+**Two confounds checked and ruled out before accepting this as a genuine
+backbone difference** (not an artifact of this integration):
+1. *Precision mismatch* — `align_words_gop`'s default `use_int8=True`
+   loads ZIPA's int8-quantized ONNX export, while the torch backend
+   (xlsr-53) always runs fp32 (it ignores the flag). Re-scored the same
+   250 utterances with ZIPA fp32
+   (`scripts/eval_zipa_precision_check.py`): fp32 r=0.2977 vs. int8
+   r=0.3021 — fp32 is not better (if anything marginally, though
+   significantly, worse) — both far below xlsr-53's ~0.38-0.40. Not the
+   explanation.
+2. *Aggregation dilution* — the hypothesis that averaging GOP-SF across
+   a multi-character phone's 1-3 tokens (section 5k's own span
+   generalization) washes out a sharper per-character signal. Recomputed
+   the same 250-utterance run's phone-level GOP-SF with `min` instead of
+   `mean` over each phone's token span (`scripts/eval_zipa_aggregation_check.py`,
+   no extra inference needed): min r=0.2703 vs. mean r=0.3021 — min is
+   significantly *worse*, not better. The mean aggregation this project
+   ships is already the better of the two; not the explanation either.
+
+**Interpretation:** with both plausible integration-artifact
+explanations checked and ruled out, the reading this section commits to
+is that **SSL pretraining representation quality/diversity matters more
+than phone-labeled supervised data quantity** for zero-shot L2
+pronunciation scoring — section 5i already showed pretraining *diversity*
+(XLSR-53's cross-lingual SSL corpus vs. lv-60's English-only) helps;
+this section's controlled comparison shows that trading SSL pretraining
+for 10x more *supervised* phone-labeled hours (ZIPA, trained
+from-scratch on IPAPack++) does not substitute for it, and may hurt --
+plausibly because wav2vec2's SSL objective on raw, diverse audio learns
+acoustic representations that generalize better to *non-native* speech
+than a model trained end-to-end to recognize phones cleanly. This is a
+real, controlled, negative result with actual content for the paper (not
+"we tried X and it didn't work"): it isolates *which* kind of scale
+(pretraining diversity vs. labeled-phone quantity) the zero-shot
+approach's performance ceiling depends on. ZIPA is not pursued further;
+xlsr-53 (`TORCH_MODEL_REPO`) remains this project's best acoustic
+backbone. `ZIPA_MODEL_REPO` stays in `proscor/align_phone.py` as a third
+backend option (fully tested, no known bugs) rather than being removed,
+since the negative result is itself the finding.
+
+**Next candidate:** the still-live DTW-over-WavLM-vs-native-reference
+lead from earlier in this section (McIntosh/Smit/Saito/Minematsu/Kamper,
+arXiv:2607.13721) — a different paradigm entirely (embedding-space
+reference comparison, not posterior-based GOP), with a real matched-family
+gap already established (0.576 vs. this project's own 0.432 on
+UME-ERJ/ERJ) rather than a hypothesis still to be tested.
+
+---
+
+### 5l. DTW-over-WavLM-vs-native-reference: a genuinely different, and better, zero-shot paradigm
+
+`proscor/dtw_ssl.py` implements McIntosh/Smit/Saito/Minematsu/Kamper's
+(arXiv:2607.13721) template-based method: extract WavLM-Large's
+final-layer frame representations for a learner utterance and for one or
+more native recordings of the *same text*, DTW-align them by frame-level
+cosine distance, and score = cumulative path cost / path length, averaged
+over every available native template. Unlike GOP, this needs no phone
+inventory, no canonical-transcription pipeline, and no phone-labeled
+acoustic model — the only requirement is a same-text native reference
+recording, and it's fully training-free (an off-the-shelf SSL model plus
+a classical DP alignment, no fitted parameters anywhere).
+
+**"Final layer" verified, not assumed:** `WavLMModel`'s `last_hidden_state`
+(the standard forward-pass output, including the encoder's own trailing
+LayerNorm) is numerically different from `output_hidden_states=True`'s
+`hidden_states[-1]` (the pre-LayerNorm hidden state one step earlier) —
+confirmed on a smoke test: mean per-frame cosine similarity 0.97 between
+the two, not 1.0. The paper doesn't specify which convention it means;
+`last_hidden_state` is what any plain WavLM forward pass returns without
+extra introspection, so it's the reading this project commits to.
+
+**Native reference data, sourced and verified before writing any scoring
+code, not assumed available:**
+- **L2-ARCTIC** speakers read the CMU ARCTIC "arctic_aXXXX" prompt set;
+  CMU ARCTIC's own native speakers (bdl, US male; slt, US female —
+  downloaded from festvox.org/cmu_arctic, not part of L2-ARCTIC itself)
+  read the *same* prompt set under the *same* filenames. Verified 150/150
+  filename overlap for a sample L2-ARCTIC speaker before relying on it.
+- **UME-ERJ** ships 20 American reference speakers (`wav/AE/*`, matching
+  the user-supplied speaker count from earlier in this plan) under a
+  *different* filename convention than the Japanese learners' recordings
+  (`S_PH_B_1_NNN.wav`-style "selection" filenames vs. learners'
+  `S#_###.wav`-style "recording" filenames) — reconciled via
+  `doc/JEcontent/tab/sentence{1,2}.tab`, a 3-column (learner filename,
+  native filename, text) table that turned out to be whitespace- (2+
+  spaces), not tab-, delimited despite the file extension. Filtering to
+  `S_PH_*`-prefixed native filenames isolates the paper's "Phones
+  (sentence)" task specifically (as opposed to `S_PR_*`, prosody
+  sentences also segmentally rated) — 592 texts here (460 TIMIT-based
+  phoneme-balanced + 32 Japanese-difficult + 100 actually-used-in-phoneme-
+  training), close to but not identical to the paper's stated 625,
+  plausibly a corpus-version/subset difference rather than a methodology
+  gap. Each `S_PH_*` filename recurs across ~11 of the 20 native
+  speakers' directories (the same prompt, recorded by each), giving
+  real multi-template averaging, not a single reference.
+
+**Result, UME-ERJ "Phones (sentence)" task** (n=293 items, 95 learner
+speaker clusters — well above this project's 4-speaker minimum bar;
+`scripts/eval_umeerj_dtw_ssl.py`, `results/umeerj_dtw_ssl_300.json`;
+xlsr-53 GOP-lite scored on the *identical* item set in the same loop,
+not reused from section 5b's broader, differently-scoped 0.432 number —
+the lesson from section 5k's aggregation-artifact near-miss):
+
+| method | r vs. human segmental rating | 95% CI |
+|---|---|---|
+| DTW-SSL (mean over templates) | **0.661** | [0.568, 0.738] |
+| DTW-SSL (min over templates) | 0.664 | [0.571, 0.741] |
+| xlsr-53 posterior-deficit | 0.440 | [0.350, 0.522] |
+| xlsr-53 GOP-SF | 0.466 | [0.369, 0.551] |
+
+Paired diff (DTW-SSL mean vs. xlsr-53 posterior-deficit): **+0.221,
+significant.** Paired diff (vs. GOP-SF): **+0.195, significant.** Mean-
+vs-min template aggregation: no significant difference (−0.003) — unlike
+section 5k's ZIPA char-span aggregation question, there's no dilution
+effect to correct for here. **DTW-SSL's own r=0.661 exceeds even the
+paper's own reported r=0.576** on what is plausibly a very similar task
+subset (not claimed as a strict replication, given the 592-vs-625 text
+count difference above).
+
+This is the strongest single improvement found in the whole section 5k/5l
+research phase: a fully zero-shot, training-free method that
+substantially and significantly outperforms this project's best existing
+acoustic-model backbone (xlsr-53) on the same items, using a completely
+different signal (whole-utterance embedding-space alignment, not
+phone-level CTC posteriors).
+
+**Second corpus, and a genuinely different — not disappointing —
+result.** L2-ARCTIC has no per-sentence holistic rating; instead
+`scripts/eval_l2arctic_dtw_ssl.py` uses the utterance-level fraction of
+phones tagged "correct" in its expert TextGrid annotations (section 5c's
+labels, at utterance rather than phone granularity, to score DTW-SSL and
+xlsr-53 GOP-lite at the same granularity as each other). Native templates:
+only 2 available per item here (bdl+slt, vs. UME-ERJ's ~11 — a real,
+noted disadvantage for DTW-SSL's template-averaging, not hidden). Six
+speakers, one per L1 (`SPEAKERS_BY_LANG`'s Arabic/Mandarin/Hindi/Korean/
+Spanish/Vietnamese groups), n=900 utterances, 6 speaker clusters (at this
+project's 4-speaker minimum, but thin — CIs below are correspondingly
+wide, and this result carries less weight than UME-ERJ's 95-cluster one):
+
+| method | r vs. utterance frac.-correct | 95% CI |
+|---|---|---|
+| DTW-SSL (mean over templates) | 0.349 | [0.018, 0.572] |
+| DTW-SSL (min over templates) | 0.359 | [0.030, 0.585] |
+| xlsr-53 posterior-deficit | 0.316 | [0.105, 0.450] |
+| xlsr-53 GOP-SF | 0.369 | [0.136, 0.489] |
+
+Paired diffs: **+0.033 vs. posterior-deficit (not significant)**, **−0.020
+vs. GOP-SF (not significant)** — a tie, not a win, on this corpus.
+
+**This is not a contradiction of the UME-ERJ result — it's the same
+label-type pattern this plan already established (sections 5b/5g/5j),
+now showing up for DTW-SSL too.** UME-ERJ's "segmental" sentence rating
+is, despite its name, a *holistic* human 1-5 impression score, not
+derived from objective phone-level tags. L2-ARCTIC's label here is the
+opposite: a *clean*, per-phone expert-annotated correctness signal.
+Section 5j's closing result showed the phone-model's posterior-deficit
+GOP wins decisively on holistic ratings and loses on clean segmental
+labels, for exactly this reason (section 5g's mechanistic explanation:
+posterior-deficit GOP is far less saturated, i.e. more informative,
+on UME-ERJ-style audio than L2-ARCTIC-style audio). DTW-SSL's whole-
+utterance embedding comparison plausibly captures the same
+duration/rate/prosody information that drives holistic human impressions
+but that a *clean* phone-correctness label doesn't reward — so it wins
+big where the label is holistic (UME-ERJ) and only ties where the label
+is clean and segmental (L2-ARCTIC, and likely so762 too, though not
+tested here). This is a coherent, mechanistically-explained pair of
+results, not a mixed bag: DTW-SSL is a genuine, substantial win for
+*this project's UME-ERJ-style holistic-rating use case* specifically,
+and a safe (never worse), zero-shot-compatible complementary signal
+everywhere else tested so far.
+
+**Third corpus: speechocean762, with a TTS-reference adaptation flagged
+up front.** speechocean762 has no native-speaker corpus to draw a
+same-text reference from the way L2-ARCTIC (bdl/slt) and UME-ERJ (its
+own 20 AE speakers) do — its 2,500 test-split prompts are essentially all
+unique (2,499/2,500), so there's no repeated-prompt corpus this project
+has matching native audio for. `scripts/eval_so762_dtw_ssl.py` substitutes
+8 synthetic voices from `sherox`'s Kitten TTS Nano (`lang="eng-kitten"`,
+int8-quantized) as templates — still training-free (an off-the-shelf TTS
+model, not fine-tuned on anything pronunciation-related) and genuinely
+multi-template (8 speaker IDs confirmed non-identical: different
+durations and RMS on a smoke test), but a real departure from the paper's
+real-native-speech design, and from what sections above validated on the
+other two corpora. Treated as a *TTS-reference variant*, not a third
+replication of the same method.
+
+**Result** (n=200, 10 speaker clusters; `results/so762_dtw_ssl_200.json`;
+label = speechocean762's own 0-10 utterance-level `accuracy` score):
+
+| method | r vs. accuracy | 95% CI |
+|---|---|---|
+| DTW-SSL (mean, TTS-reference) | 0.434 | [0.188, 0.579] |
+| DTW-SSL (min, TTS-reference) | 0.439 | [0.206, 0.579] |
+| xlsr-53 posterior-deficit | 0.464 | [0.235, 0.609] |
+| xlsr-53 GOP-SF | 0.477 | [0.256, 0.612] |
+
+Paired diffs: −0.030 (vs. posterior-deficit) and −0.043 (vs. GOP-SF),
+**neither significant** — a third tie, not a loss, but this time with a
+slight (non-significant) point-estimate edge to xlsr-53. Consistent with
+the label-type pattern from L2-ARCTIC above: speechocean762's `accuracy`
+score is a clean, numeric, accuracy-specific expert rating, not a
+holistic impression, so a tie (rather than the UME-ERJ-style win) is what
+the section 5b/5g/5j/5l pattern predicts. **A second, uncontrolled-for
+confound also plausibly contributes here** and can't be ruled apart from
+the label-type effect with this run alone: the synthetic, int8-quantized
+TTS templates are a real quality downgrade from L2-ARCTIC/UME-ERJ's real
+native speech, and the paper's own method has never been validated
+against synthetic references. Both explanations point the same
+direction (predict a weaker DTW-SSL showing here than on UME-ERJ), so
+this result doesn't discriminate between them — reported honestly as an
+open confound, not resolved.
+
+**Overall picture across all three corpora:** DTW-SSL is a substantial,
+significant, well-powered win on UME-ERJ's holistic ratings (+0.195 to
++0.221 over xlsr-53), and a tie — never a significant loss — on both
+corpora with clean/accuracy-focused labels (L2-ARCTIC, so762). As a
+zero-shot signal to report alongside GOP-lite, it is never worse and
+sometimes much better, which is itself the finding worth taking to the
+paper: which one wins depends on what the target rating actually
+measures, not on which corpus or L1 population it is.
+
+**Status:** all three scripts, `proscor/dtw_ssl.py`, and
+`tests/test_dtw_ssl.py` (5 pure-numpy tests: DTW cost on identical/
+orthogonal sequences, the path-length-vs-sum-of-lengths normalization
+distinction specifically, symmetry, and template mean/min aggregation)
+are complete; full suite (75 tests) passes. Not yet integrated into the
+CLI/web app or combined into a single blended score with GOP-lite —
+reported here as a second, independent zero-shot metric, per the plan
+this project committed to before running any numbers (report both
+signals rather than force a single combined one without a principled,
+training-free way to weight them).
+
+---
+
 ## 6. CLI commands summary  (completing the empty section from the old plan)
 
 ```bash

@@ -332,6 +332,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plan has gotten to the section 5b/5e/5g open question: the UME-ERJ
   flip is about rating methodology, not L1, checked directly rather than
   inferred by elimination across mismatched corpora.
+- **ZIPA backend prototype** (`proscor/align_phone.py`: `ZIPA_MODEL_REPO`,
+  `_word_phone_spans`, `_leading_marker_prefix`, `_ZIPA_CHAR_SUBS`;
+  `scripts/eval_so762_phone_zipa_paired.py`; PLAN.md section 5k). Added
+  Zhu et al.'s ZIPA (`anyspeech/zipa-large-crctc-ns-800k`, ACL 2025) as a
+  third acoustic-model backend -- a Zipformer-CTC phone recognizer
+  trained on IPAPack++ (17k phone-labeled + 11.8k pseudo-labeled hours,
+  88 languages), a direct test of whether 10x more phone-labeled
+  pretraining data extends section 5i's "more multilingual pretraining
+  helps" result. Required generalizing `align_words_gop`/
+  `align_words_gop_sf` from "one CTC token per phone" to "one *span* of
+  1+ tokens per phone" (ZIPA's 127-symbol vocab is IPA *characters*, not
+  IPA *phones* -- a phone espeak writes as one string, e.g. "ɑːɹ", is
+  1-3 separate ZIPA tokens); confirmed backward-compatible (all 24
+  pre-existing `tests/test_align_phone.py` tests pass unchanged, 5 new
+  ones added). Caught two real bugs before trusting any correlation
+  number, both by comparing against the two known-good backends on
+  identical audio: (1) ZIPA emits a leading "▁" word-boundary token with
+  near-certainty at every utterance's start, which the canonical target
+  sequence didn't include, producing a spurious ~50-nat GOP-SF penalty on
+  the first phone only (fixed: `_leading_marker_prefix` prepends it);
+  (2) three atomic IPA codepoints espeak commonly emits ("ɚ", "ɡ", "ᵻ",
+  together in ~21% of speechocean762's unique words) have no token in
+  ZIPA's vocab and were silently dropped whole-phone (fixed:
+  `_ZIPA_CHAR_SUBS`, bringing word-level vocab coverage from 79.1% to
+  100%). **Result, after both fixes, properly powered** (n=250
+  utterances, 13 speaker clusters): ZIPA loses significantly to xlsr-53
+  at phone level on both scoring formulas (posterior-deficit: 0.286 vs.
+  0.384; GOP-SF: 0.302 vs. 0.395) and ties at word level. Two follow-up
+  checks ruled out integration artifacts as the explanation: int8
+  quantization (fp32 is not better: 0.298 vs. 0.302 int8) and
+  mean-vs-min token aggregation for multi-character phones (min is
+  worse: 0.270 vs. 0.302 mean). Read as a real backbone-level finding:
+  SSL pretraining diversity (xlsr-53) matters more than phone-labeled
+  supervised data quantity (ZIPA) for zero-shot L2 GOP. ZIPA not pursued
+  further; xlsr-53 remains the best backend.
+- **DTW-over-WavLM-vs-native-reference scoring** (`proscor/dtw_ssl.py`;
+  `scripts/eval_umeerj_dtw_ssl.py`, `eval_l2arctic_dtw_ssl.py`; PLAN.md
+  section 5l). Implemented McIntosh/Smit/Saito/Minematsu/Kamper's
+  (arXiv:2607.13721) template-based method: WavLM-Large final-layer
+  frame embeddings, DTW-aligned by cosine distance against one or more
+  same-text native reference recordings, path-length-normalized
+  cumulative cost as the score -- no phone inventory, no canonical
+  transcription, no phone-labeled acoustic model, fully training-free.
+  Sourced and verified real native-reference audio for two corpora before
+  writing any scoring code: CMU ARCTIC's bdl/slt (downloaded from
+  festvox.org, 150/150 filename overlap confirmed with L2-ARCTIC), and
+  UME-ERJ's 20 American reference speakers (reconciled to the Japanese
+  learners' different filename convention via a whitespace-delimited,
+  not actually tab-delimited, mapping table). Verified WavLM-Large's
+  `last_hidden_state` is NOT numerically identical to
+  `output_hidden_states=True`'s `hidden_states[-1]` (mean cosine
+  similarity 0.97) before picking which one "final layer" means. **Result
+  on UME-ERJ's phonetic-sentence task** (n=293, 95 speaker clusters,
+  xlsr-53 scored on the identical item set in the same loop): DTW-SSL
+  r=0.661 vs. xlsr-53 posterior-deficit r=0.440 / GOP-SF r=0.466, both
+  paired diffs significant (+0.221, +0.195) -- the largest single
+  improvement found in this whole research phase, and higher than the
+  source paper's own reported r=0.576. **Result on L2-ARCTIC** (n=900, 6
+  speaker clusters, utterance-level phone-correctness fraction as the
+  label): a tie, not a win (DTW-SSL r=0.349 vs. xlsr-53 0.316-0.369,
+  paired diffs not significant) -- read as the same clean-label-vs-
+  holistic-rating pattern sections 5b/5g/5j already established for
+  phone-vs-BPE GOP, now showing up for DTW-SSL: it wins big where the
+  label is a holistic human impression (UME-ERJ) and ties where the
+  label is a clean, objective phone-correctness tag (L2-ARCTIC) --
+  a coherent, mechanistically-explained pair of results, not a
+  contradiction. **Third corpus, speechocean762** (`scripts/eval_so762_dtw_ssl.py`):
+  no native-reference corpus exists for its prompts (2,499/2,500 unique,
+  no overlap with any corpus this project has native audio for), so
+  substituted 8 synthetic voices from sherox's Kitten TTS Nano as
+  templates -- flagged explicitly as a "TTS-reference variant", not a
+  third replication of the paper's real-native-speech method. Result
+  (n=200, 10 speaker clusters): another tie (DTW-SSL r=0.434-0.439 vs.
+  xlsr-53 r=0.464-0.477, neither paired diff significant), consistent
+  with the same clean-label pattern (speechocean762's `accuracy` score is
+  a clean numeric rating, not holistic) but with a second, un-separated
+  confound (synthetic vs. real reference quality) that could also explain
+  it -- reported as an open confound, not resolved. Overall picture
+  across all three corpora: DTW-SSL is never significantly worse than
+  xlsr-53 GOP-lite, and substantially better specifically where the
+  target label is a holistic human rating. 5 new tests in
+  `tests/test_dtw_ssl.py` (identical/orthogonal-sequence DTW cost, the
+  path-length-vs-sum-of-lengths normalization distinction specifically,
+  symmetry, template mean/min aggregation); full suite (75 tests) passes.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`

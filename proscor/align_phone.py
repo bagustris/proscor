@@ -29,6 +29,37 @@ exists for it, so passing `model_id=TORCH_MODEL_REPO` to `align_words_gop`/
 `onnxruntime` (optional deps, only needed for this path); the default
 `model_id=None` keeps the original ONNX/lv-60 path byte-for-byte
 unchanged.
+
+**A third backend, ZIPA** (PLAN.md section 5k): `ZIPA_MODEL_REPO`
+(`anyspeech/zipa-large-crctc-ns-800k`, Zhu et al., ACL 2025) is a
+Zipformer-CTC phone recognizer trained on IPAPack++ (17k phone-labeled
+hours + 11.8k pseudo-labeled hours, 88 languages) -- an order of
+magnitude more phone-labeled pretraining data than TORCH_MODEL_REPO's
+espeak-cv-ft fine-tune, a direct extension of the "more multilingual
+phone-labeled pretraining helps" finding from section 5i. Two structural
+differences from the other two backends, both handled below rather than
+worked around: (1) its frontend takes 80-dim fbank features (via
+`lhotse`, an optional dep only needed for this path), not raw waveform;
+(2) its 127-symbol CTC vocabulary is *IPA characters*, not *IPA phones*
+-- a phone espeak emits as one multi-codepoint string (e.g. "ɑːɹ") is
+1-3 separate tokens in ZIPA's output (base letter + length mark +
+rhotic-hook, each its own codepoint and each already a standalone entry
+in `tokens.txt`); espeak's own codepoint boundaries line up with ZIPA's
+token boundaries directly for most phones, but three common atomic
+codepoints (script-g, r-colored schwa, espeak's "schwi") have no token
+in ZIPA's 127-symbol vocab at all and need a small substitution table
+(`_ZIPA_CHAR_SUBS`) rather than a straight per-character lookup -- see
+PLAN.md section 5k for how that gap was found (systematic, not random:
+~20% of speechocean762's unique words use one of the three). `_word_phone_spans`
+is the one function that knows about this: for the ONNX/torch backends
+it's a thin wrapper around `_word_phones_and_ids` where every phone spans
+exactly one token (unchanged behavior, unit-tested); for ZIPA it expands
+each phone into its constituent character tokens and records the
+resulting multi-token span. `align_words_gop`/`align_words_gop_sf` both
+consume these spans as "the token range this phone owns" and
+average/frame-weight-average over however many tokens that is -- one for
+the existing backends (mathematically identical to the old one-token-
+per-phone code), 1-3 for ZIPA.
 """
 import json
 import re
@@ -40,6 +71,7 @@ from proscor.align import _NEG, _ctc_loglik, _ctc_viterbi
 
 MODEL_REPO = "onnx-community/wav2vec2-lv-60-espeak-cv-ft-ONNX"
 TORCH_MODEL_REPO = "facebook/wav2vec2-xlsr-53-espeak-cv-ft"
+ZIPA_MODEL_REPO = "anyspeech/zipa-large-crctc-ns-800k"
 SAMPLE_RATE = 16000
 
 _SESSIONS = {}  # (model_id, use_int8_or_None) -> (session, backend, vocab, blank)
@@ -76,8 +108,13 @@ def _session(model_id: str = None, use_int8: bool = True):
     from huggingface_hub import hf_hub_download
 
     model_id = model_id or MODEL_REPO
-    backend = "onnx" if model_id == MODEL_REPO else "torch"
-    key = (model_id, use_int8 if backend == "onnx" else None)
+    if model_id == MODEL_REPO:
+        backend = "onnx"
+    elif model_id == ZIPA_MODEL_REPO:
+        backend = "zipa"
+    else:
+        backend = "torch"
+    key = (model_id, use_int8 if backend in ("onnx", "zipa") else None)
 
     if key not in _SESSIONS:
         if backend == "onnx":
@@ -89,6 +126,21 @@ def _session(model_id: str = None, use_int8: bool = True):
             vocab_path = hf_hub_download(model_id, "vocab.json")
             with open(vocab_path, encoding="utf-8") as f:
                 vocab = json.load(f)
+            blank = vocab["<pad>"]
+        elif backend == "zipa":
+            import onnxruntime as ort
+
+            fname = "model.int8.onnx" if use_int8 else "model.onnx"
+            path = hf_hub_download(model_id, fname)
+            session = ort.InferenceSession(path)
+            tokens_path = hf_hub_download(model_id, "tokens.txt")
+            vocab = {}
+            with open(tokens_path, encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        vocab[parts[0]] = int(parts[1])
+            blank = vocab["<blk>"]
         else:
             from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2ForCTC
 
@@ -102,7 +154,8 @@ def _session(model_id: str = None, use_int8: bool = True):
             # out of bounds.
             vocab = {k: v for k, v in tok.get_vocab().items() if v < model.config.vocab_size}
             session = model
-        _SESSIONS[key] = (session, backend, vocab, vocab["<pad>"])
+            blank = vocab["<pad>"]
+        _SESSIONS[key] = (session, backend, vocab, blank)
 
     session, backend, vocab, blank = _SESSIONS[key]
     _BACKEND = backend
@@ -113,18 +166,35 @@ def _session(model_id: str = None, use_int8: bool = True):
 
 def _logprobs(samples: np.ndarray, model_id: str = None, use_int8: bool = True) -> np.ndarray:
     """float32 mono 16 kHz [-1, 1] -> (T, vocab) CTC log-probs. wav2vec2
-    takes raw waveform (per-utterance zero-mean/unit-variance normalized,
-    matching the HF feature extractor's `do_normalize`) -- no fbank step."""
+    (onnx/torch backends) takes raw waveform (per-utterance zero-mean/
+    unit-variance normalized, matching the HF feature extractor's
+    `do_normalize`) -- no fbank step. ZIPA's Zipformer frontend instead
+    takes 80-dim fbank features (`lhotse`'s kaldi-compatible extractor,
+    the same one its own inference code uses -- see PLAN.md section 5k),
+    computed from the *unnormalized* waveform; wav2vec2's amplitude
+    normalization is specific to that model's training convention and
+    doesn't apply here."""
     sess = _session(model_id, use_int8)
     samples = np.ascontiguousarray(samples, dtype=np.float32)
-    samples = (samples - samples.mean()) / (samples.std() + 1e-7)
-    if _BACKEND == "onnx":
-        logits = sess.run(None, {"input_values": samples[None, :]})[0][0]
-    else:
+    if _BACKEND == "zipa":
         import torch
+        from lhotse.features.kaldi.extractors import Fbank, FbankConfig
 
-        with torch.no_grad():
-            logits = sess(torch.from_numpy(samples)[None, :]).logits[0].numpy()
+        extractor = Fbank(FbankConfig(num_filters=80, dither=0.0, snip_edges=False))
+        audio_tensor = torch.from_numpy(samples).unsqueeze(0)
+        feature = extractor.extract_batch([audio_tensor], sampling_rate=SAMPLE_RATE)[0]
+        feature = feature.unsqueeze(0).numpy().astype(np.float32)
+        feat_lens = np.array([feature.shape[1]], dtype=np.int64)
+        logits = sess.run(None, {"x": feature, "x_lens": feat_lens})[0][0]
+    else:
+        samples = (samples - samples.mean()) / (samples.std() + 1e-7)
+        if _BACKEND == "onnx":
+            logits = sess.run(None, {"input_values": samples[None, :]})[0][0]
+        else:
+            import torch
+
+            with torch.no_grad():
+                logits = sess(torch.from_numpy(samples)[None, :]).logits[0].numpy()
     m = logits.max(-1, keepdims=True)
     return logits - m - np.log(np.exp(logits - m).sum(-1, keepdims=True))
 
@@ -156,6 +226,91 @@ def _word_phones_and_ids(word: str) -> tuple:
     return kept, [_TOK2ID[p] for p in kept]
 
 
+def _leading_marker_prefix() -> list:
+    """ZIPA's CTC output includes a leading "▁" (SentencePiece word-boundary
+    symbol, id 3) that the model emits with near-certainty at the very
+    start of an utterance, *before* the first real phone -- confirmed by
+    inspection (PLAN.md section 5k): the first several frames put >99%
+    mass on "▁", not blank or the canonical first phone. It is not
+    re-emitted before every word (only utterance-initial), so it isn't
+    modeled per-word the way blank is implicit between phones -- it's
+    prepended once, here, as an utterance-level prefix `flat` starts from,
+    outside every phone's span so it never gets scored as if it were a
+    phone. Without this, the canonical sequence's first phone is forced to
+    explain frames the model spent on "▁" instead, producing a large
+    spurious GOP/GOP-SF penalty on utterance-initial phones only (an
+    isolated m=-52.7 GOP-SF outlier vs. the same phone's -0.0 to -0.01 on
+    the other two backends is what surfaced this). The other two backends
+    have no such symbol in their vocab, so this is a no-op for them."""
+    if _BACKEND == "zipa" and "▁" in _TOK2ID:
+        return [_TOK2ID["▁"]]
+    return []
+
+
+_ZIPA_CHAR_SUBS = {
+    # espeak-ng emits these three atomic codepoints for very common English
+    # sounds, none of which exist as their own token in ZIPA's 127-symbol
+    # vocabulary (confirmed by scanning every phone speechocean762's word
+    # list produces, PLAN.md section 5k): without a substitution these
+    # phones are dropped entirely (not approximated), and they are not
+    # rare -- "ɚ" alone (the unstressed r-colored vowel: "-er" as in
+    # "mother", "computer", "teacher") appears in ~10% of speechocean762's
+    # unique words.
+    "ɡ": "g",     # IPA "script g" (U+0261) vs. ZIPA's ASCII "g" (U+0067) --
+                  # same phone, a Unicode-convention mismatch, not a real
+                  # substitution.
+    "ɚ": "ə˞",    # r-colored schwa has no Unicode decomposition (confirmed:
+                  # unicodedata.normalize("NFD", "ɚ") is a no-op) but ZIPA's
+                  # vocab has both the base vowel and the rhotic-hook
+                  # diacritic as separate tokens, so this is written out.
+    "ɝ": "ɜ˞",    # same pattern, the stressed counterpart (not observed in
+                  # speechocean762 but included for robustness/generality).
+    "ᵻ": "ɪ",     # espeak's "schwi" (unstressed/reduced vowel between /ɪ/
+                  # and /ə/, e.g. "roses", "wanted"); mapped to /ɪ/, the
+                  # same approximation `_ARPABET_EQUIV["IH"]` already makes
+                  # elsewhere in this file.
+}
+
+
+def _zipa_chars(phone: str):
+    """Expand `phone`'s characters through `_ZIPA_CHAR_SUBS`, so a phone
+    espeak writes with a codepoint ZIPA's vocab lacks still contributes the
+    ZIPA-compatible characters it substitutes to (e.g. "ɚ" -> "ə", "˞"),
+    instead of being silently dropped."""
+    for ch in phone:
+        yield from _ZIPA_CHAR_SUBS.get(ch, ch)
+
+
+def _word_phone_spans(word: str) -> tuple:
+    """(phones, token_ids, phone_spans): `token_ids` is this word's flat
+    token sequence and `phone_spans[i]` is the (start, end) range within it
+    that `phones[i]` owns. For the onnx/torch backends this is a thin
+    wrapper around `_word_phones_and_ids` -- one token per phone, so every
+    span has length 1, identical to indexing `token_ids` directly. For the
+    zipa backend (PLAN.md section 5k) a phone is 1-3 *characters* in
+    ZIPA's IPA vocabulary (e.g. "ɑːɹ" -> "ɑ", "ː", "ɹ", each already a
+    standalone token in tokens.txt -- espeak's own codepoint boundaries
+    coincide with ZIPA's, no remapping table needed), so a phone's span
+    can be longer than 1; a phone whose characters are *all* missing from
+    the vocab (essentially never observed -- ZIPA's 127 symbols cover the
+    IPA inventory espeak uses) is dropped entirely, mirroring
+    `_word_phones_and_ids`'s drop-both-lists-in-lockstep behavior."""
+    if _BACKEND != "zipa":
+        phones, ids = _word_phones_and_ids(word)
+        return phones, ids, [(k, k + 1) for k in range(len(ids))]
+
+    phones, flat, spans = [], [], []
+    for p in _phonemize_word(word):
+        ids = [_TOK2ID[ch] for ch in _zipa_chars(p) if ch in _TOK2ID]
+        if not ids:
+            continue
+        start = len(flat)
+        flat.extend(ids)
+        spans.append((start, len(flat)))
+        phones.append(p)
+    return phones, flat, spans
+
+
 def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
                      use_int8: bool = True, model_id: str = None) -> dict:
     """Force-align a full utterance's `words` against `samples` at phone
@@ -183,13 +338,14 @@ def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
     _session(model_id, use_int8)
     lp = _logprobs(samples, model_id, use_int8)
 
-    flat, spans, phone_texts = [], [], []
+    flat, spans, phone_texts, phone_spans = _leading_marker_prefix(), [], [], []
     for w in words:
-        phones, toks = _word_phones_and_ids(w)
-        start = len(flat)
+        phones, toks, local_spans = _word_phone_spans(w)
+        offset = len(flat)
         flat.extend(toks)
-        spans.append((start, len(flat)))
+        spans.append((offset, len(flat)))
         phone_texts.append(phones)
+        phone_spans.append([(offset + s, offset + e) for s, e in local_spans])
 
     if not flat:
         return {"word_gop": [None] * len(words), "phone_gop": [[] for _ in words]}
@@ -202,21 +358,33 @@ def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
     frame_best = lp.max(axis=-1)
 
     word_gop, phone_gop = [], []
-    for (start, end), phones in zip(spans, phone_texts):
+    for (start, end), phones, ph_spans in zip(spans, phone_texts, phone_spans):
         if start == end:
             word_gop.append(None)
             phone_gop.append([])
             continue
 
         this_word_phones = []
-        for k, phone in zip(range(start, end), phones):
-            state = 2 * k + 1
-            pidx = np.nonzero(path == state)[0]
-            if pidx.size == 0:
+        for (pstart, pend), phone in zip(ph_spans, phones):
+            # A phone owns 1 token (onnx/torch) or 1-3 tokens (zipa, one
+            # per IPA character -- see _word_phone_spans); frame-weighted
+            # mean across however many states/tokens it owns. With exactly
+            # one token this reduces to the old single-state computation
+            # byte-for-byte.
+            state_gops = []
+            for k in range(pstart, pend):
+                state = 2 * k + 1
+                pidx = np.nonzero(path == state)[0]
+                if pidx.size == 0:
+                    continue
+                pgop = float((lp[pidx, ext_labels[state]] - frame_best[pidx]).mean())
+                state_gops.append((pgop, int(pidx.size)))
+            if not state_gops:
                 this_word_phones.append(None)
                 continue
-            pgop = float((lp[pidx, ext_labels[state]] - frame_best[pidx]).mean())
-            this_word_phones.append({"phone": phone, "gop": pgop, "n_frames": int(pidx.size)})
+            total_frames = sum(n for _, n in state_gops)
+            mean_gop = sum(g * n for g, n in state_gops) / total_frames
+            this_word_phones.append({"phone": phone, "gop": mean_gop, "n_frames": total_frames})
         phone_gop.append(this_word_phones)
 
         # Word GOP = mean of its phones' own GOP (phone-state frames only).
@@ -413,13 +581,14 @@ def align_words_gop_sf(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
     _session(model_id, use_int8)
     lp = _logprobs(samples, model_id, use_int8)
 
-    flat, spans, phone_texts = [], [], []
+    flat, spans, phone_texts, phone_spans = _leading_marker_prefix(), [], [], []
     for w in words:
-        phones, toks = _word_phones_and_ids(w)
-        start = len(flat)
+        phones, toks, local_spans = _word_phone_spans(w)
+        offset = len(flat)
         flat.extend(toks)
-        spans.append((start, len(flat)))
+        spans.append((offset, len(flat)))
         phone_texts.append(phones)
+        phone_spans.append([(offset + s, offset + e) for s, e in local_spans])
 
     if not flat:
         return {"word_gop": [None] * len(words), "phone_gop": [[] for _ in words]}
@@ -427,13 +596,19 @@ def align_words_gop_sf(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
     scores = gop_sf(lp, flat, _BLANK, lp.shape[1])
 
     word_gop, phone_gop = [], []
-    for (start, end), phones in zip(spans, phone_texts):
+    for (start, end), phones, ph_spans in zip(spans, phone_texts, phone_spans):
         if start == end:
             word_gop.append(None)
             phone_gop.append([])
             continue
-        this_word = [{"phone": p, "gop": scores[k]} if scores[k] is not None else None
-                     for k, p in zip(range(start, end), phones)]
+        this_word = []
+        for (pstart, pend), phone in zip(ph_spans, phones):
+            # One score per token (gop_sf is scored on the flat sequence);
+            # a phone's GOP is the mean over however many tokens it owns
+            # (1 for onnx/torch, 1-3 for zipa -- see _word_phone_spans).
+            # With exactly one token this reduces to scores[k] directly.
+            vals = [scores[k] for k in range(pstart, pend) if scores[k] is not None]
+            this_word.append({"phone": phone, "gop": float(np.mean(vals))} if vals else None)
         phone_gop.append(this_word)
         vals = [p["gop"] for p in this_word if p is not None]
         word_gop.append({"gop": float(np.mean(vals))} if vals else None)
