@@ -578,3 +578,24 @@ def test_align_words_gop_zipa_multitoken_phone_is_frame_weighted_mean(monkeypatc
     # (-2.5*2 + 0.0*1) / 3 = -5/3, NOT a naive mean of (-2.5, 0.0) = -1.25.
     assert phone_gop[1]["gop"] == pytest.approx(-5.0 / 3, abs=1e-6)
     assert phone_gop[1]["n_frames"] == 3
+
+
+def test_align_words_gop_reports_phone_frame_spans(monkeypatch):
+    """`phone_gop` entries carry the [first, last+1) CTC frame range their own
+    Viterbi state(s) occupy (used by phone-level DTW, PLAN.md section 5m) --
+    checked on a path whose frame allocation is known by construction."""
+    blank = 0
+    monkeypatch.setattr(align_phone, "_BACKEND", "onnx")
+    monkeypatch.setattr(align_phone, "_TOK2ID", {"a": 1, "b": 2, "c": 3})
+    monkeypatch.setattr(align_phone, "_BLANK", blank)
+    monkeypatch.setattr(align_phone, "_session", lambda model_id=None, use_int8=True: None)
+    monkeypatch.setattr(align_phone, "_phonemize_word",
+                         lambda w: {"one": ("a",), "two": ("b", "c")}[w])
+    # a: frames 0-1, blank: 2, b: 3, blank: 4, c: 5
+    lp = _lp_for_path([1, 1, blank, 2, blank, 3], T=6, V=4)
+    monkeypatch.setattr(align_phone, "_logprobs", lambda samples, model_id=None, use_int8=True: lp)
+
+    result = align_phone.align_words_gop(np.zeros(1600, dtype=np.float32), ["one", "two"],
+                                          sr=align_phone.SAMPLE_RATE)
+    assert result["phone_gop"][0][0]["span"] == (0, 2)
+    assert [p["span"] for p in result["phone_gop"][1]] == [(3, 4), (5, 6)]

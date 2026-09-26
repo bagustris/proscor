@@ -416,6 +416,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/test_dtw_ssl.py` (identical/orthogonal-sequence DTW cost, the
   path-length-vs-sum-of-lengths normalization distinction specifically,
   symmetry, template mean/min aggregation); full suite (75 tests) passes.
+- **Zero-shot GOP vs. trained GOP: a stacked, held-out study** (PLAN.md
+  section 5m; `scripts/collect_so762_full.py`, `collect_native_gop.py`,
+  `collect_so762_phone_dtw.py`, `analyze_so762_{full,stack,fusion_heldout,
+  phone_fusion,context}.py`, `eval_umeerj_dtw_variants.py` +
+  `analyze_umeerj_dtw_variants.py`, `eval_l2arctic_phone_dtw.py`). Reframed
+  the target first: xlsr-53 GOP-SF already exceeds the classic trained
+  RF/SVR phone baselines (0.472 vs. 0.440/0.450); the real gap is to GOPT
+  (phone 0.612, word 0.533, utterance 0.714/0.742). Collected the full
+  2,500-utterance so762 test set once and re-analysed offline (baseline
+  reproduces section 5i exactly), with every stacked configuration chosen
+  by speaker-disjoint two-fold selection (config and z-stats from one half,
+  reported on the other). **Held-out result:** phone 0.472 -> 0.507 (0.517
+  with word/utterance context), word 0.380 -> 0.501, utterance accuracy
+  0.573 -> 0.712, utterance total 0.613 -> 0.751 -- i.e. parity with GOPT at
+  utterance level (0.714/0.742), 94% at word level, 83-84% at phone level,
+  with no pronunciation-label training. Drivers: pooling (utterance = mean
+  over phones; word = mean of 2 lowest phones), label-free per-phone
+  calibration from native-speech GOP statistics (confirmed on a second
+  corpus: L2-ARCTIC phone 0.256 -> 0.309, significant), and an unweighted
+  fusion with DTW-SSL (+0.07 utterance; +0.089 phone on L2-ARCTIC with real
+  native templates, only +0.010 on so762 whose templates are synthetic).
+  Rejected with evidence: native-native DTW cost normalization (hurts),
+  native-percentile calibration (0.242, CTC posteriors are peaky), WavLM
+  layer 21 as a default (helps UME-ERJ holistic ratings +0.046 held-out,
+  does not transfer to L2-ARCTIC phone level). **Corrects section 5l:** the
+  so762 DTW-SSL "tie" was an unrepresentative 10-speaker subset; on all
+  2,500 utterances DTW-SSL alone is r=0.677/0.716 (+0.10 over the GOP
+  baseline). New in `dtw_ssl.py`: numba-jitted DP (80x faster, identical to
+  the Python reference incl. tie-break), `dtw_path`, `phone_costs`,
+  `embed_layers`; `align_words_gop` phone entries gain an additive `span`.
+  Two follow-ups, both negative: **(1) better/more native-like reference
+  TTS** (`proscor/tts_ref.py`; Kokoro, LibriTTS-R, ARCTIC-Piper, US Piper,
+  British Piper vs. the original Kitten voices, 189 utterances / 63 speakers,
+  `scripts/analyze_tts_pilot.py`): phone-level DTW is 0.35-0.38 for every set;
+  Kokoro's utterance-total edge (+0.034) is the only nominal gain, and
+  British vs. US voices are indistinguishable (all diffs n.s.) -- answering
+  "do references need to be US speakers" empirically for synthetic voices;
+  **(2) native calibration of the DTW cost** (`scripts/collect_native_dtw.py`,
+  `analyze_dtw_calibration.py`): +0.005 fused on so762 (synthetic refs) but
+  significantly *worse* on L2-ARCTIC with real native refs (fused 0.364 ->
+  0.345), so not adopted. Phone-level stays 0.507 (83% of GOPT). Also fixed
+  two collector bugs found while doing this (a deleted helper that crashed
+  pilots at startup; a hardcoded thread count that oversubscribed the CPU).
+  4 new tests; full suite (79 tests) passes.
 
 ### Fixed
 - `proscor/tts.py`: `synthesize()` passed `audio_prompt`/`audio_prompt_text`

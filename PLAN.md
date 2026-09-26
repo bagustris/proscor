@@ -2272,6 +2272,18 @@ sometimes much better, which is itself the finding worth taking to the
 paper: which one wins depends on what the target rating actually
 measures, not on which corpus or L1 population it is.
 
+**Correction (section 5m): the so762 "tie" above came from an
+unrepresentative subset.** The n=200 run scored the first 200 test
+utterances -- only 10 speakers -- and its xlsr-53 baseline (0.477) was
+itself well below the full-corpus number (0.573, section 5i), which is the
+tell. On all 2,500 test utterances (125 speakers, 4 synthetic templates,
+`results/so762_full.jsonl`) DTW-SSL reaches r=0.677 (utterance accuracy)
+and 0.716 (utterance total), i.e. **+0.10 over the plain GOP baseline,
+significant**, not a tie. The "TTS-reference variant" caveat above still
+applies (synthetic, not real native speech); the label-type story for
+L2-ARCTIC vs. UME-ERJ is unaffected. Lesson recorded: a subset run whose
+own baseline doesn't match the full-corpus baseline is not evidence.
+
 **Status:** all three scripts, `proscor/dtw_ssl.py`, and
 `tests/test_dtw_ssl.py` (5 pure-numpy tests: DTW cost on identical/
 orthogonal sequences, the path-length-vs-sum-of-lengths normalization
@@ -2282,6 +2294,188 @@ reported here as a second, independent zero-shot metric, per the plan
 this project committed to before running any numbers (report both
 signals rather than force a single combined one without a principled,
 training-free way to weight them).
+
+---
+
+### 5m. How close can zero-shot GOP get to trained GOP? A stacked, held-out study
+
+**The target, stated precisely.** On so762 phone level, this project's
+xlsr-53 GOP-SF (0.472) already *exceeds* the classic trained RF/SVR
+baselines (0.440/0.450, section 5a) -- "comparable to trained GOP" is
+already true against those. The remaining gap is to GOPT (Gong et al.,
+ICASSP 2022), a multi-task transformer trained on so762's own labels:
+phone 0.612, word 0.533, utterance accuracy 0.714, total 0.742. A trained
+regressor learns rater calibration a zero-shot system structurally cannot,
+so the honest goal is "X% of GOPT with no pronunciation-label training".
+Here "zero-shot" keeps this project's meaning: nothing is fit to
+pronunciation labels; statistics estimated from *native* speech (no labels)
+and synthetic voices are allowed and are disclosed wherever used.
+
+**Method.** `scripts/collect_so762_full.py` scored all 2,500 test
+utterances once (xlsr-53 and lv-60, each posterior-deficit and GOP-SF,
+per-phone; plus DTW-SSL against 4 synthetic-voice templates) and
+`scripts/collect_native_gop.py` collected per-phone GOP on 1,200 native
+utterances (UME-ERJ American speakers, S_PH_* sentences); every probe is an
+offline re-analysis of those files. `scripts/analyze_so762_full.py`'s
+baseline reproduces section 5i exactly (phone 0.472, word 0.380, utterance
+accuracy 0.573) before any variant is trusted. **Selection discipline:**
+several probes below looked at test labels, so anything stacked is chosen
+with speaker-disjoint two-fold selection -- configuration and all z-score
+statistics come from one half of the 125 speakers, the score is reported on
+the other, pooled (`analyze_so762_stack.py`, `..._fusion_heldout.py`,
+`..._phone_fusion.py`, `..._context.py`). Both folds independently chose
+nearly identical configurations at every level.
+
+**What each lever did** (so762 unless noted; single-lever, full data):
+
+| lever | result | verdict |
+|---|---|---|
+| utterance = mean over all phones (instead of mean of word means) | utt-acc 0.573 -> 0.633 | keep (no parameter) |
+| word = mean of its 2 lowest phone scores | word 0.380 -> 0.441 | keep |
+| ensemble xlsr-53 + lv-60 GOP-SF (unweighted) | phone 0.472 -> 0.485, utt-acc 0.594 | small, kept in grid |
+| native per-phone calibration, subtract native mean | phone 0.493, word 0.427 | **keep** |
+| native per-phone calibration, z-score | word 0.462, utt-acc 0.631 | **keep** |
+| native per-phone calibration, percentile | phone 0.242 | reject (CTC posteriors are peaky: many ties) |
+| DTW-SSL fusion, utterance level (unweighted z-mean) | utt-acc +0.07 over calibrated GOP | **keep** |
+| per-phone DTW, real native templates (L2-ARCTIC, 15.5k phones, 12 speakers) | DTW 0.300 vs GOP-SF 0.256; fused 0.345 | **keep** |
+| per-phone DTW, synthetic templates (so762) | DTW alone 0.389; fused adds only +0.010 phone | weak (see below) |
+| native-native cost normalization of DTW (UME-ERJ) | -0.012 (subtract), -0.177 (z) | reject: the offset is real signal |
+| WavLM layer sweep (UME-ERJ, held-out) | layer 21: 0.707 vs final 0.661 (+0.046, sig) | UME-ERJ only |
+| same layer on L2-ARCTIC phone level | layer 21 DTW 0.269 < final-layer 0.300 | does not transfer -> default stays final layer |
+| phone score + word/utterance context (lam, mu) | phone +0.013 (n.s.), both folds pick 0.25/0.25 | small, optional |
+
+**Cross-corpus check of the calibration** (it was found on so762, so it
+needed a second corpus): native statistics from UME-ERJ's American speakers
+applied to L2-ARCTIC (Arabic, Mandarin, Hindi, Korean, Spanish, Vietnamese;
+`results/l2arctic_phone_dtw_calib.json`): GOP-SF 0.256 -> 0.297 (shift,
++0.041) / 0.309 (z, +0.053), both significant; fused with per-phone DTW
+0.364 (+0.108 over GOP-SF).
+
+**Headline, fully held-out** (speechocean762 test, 2,500 utterances, 125
+speakers; CI = speaker-cluster bootstrap; "baseline" = plain xlsr-53
+GOP-SF as in section 5i):
+
+| level | baseline | calibrated GOP | + DTW-SSL fused | GOPT (trained) | fused as % of GOPT |
+|---|---|---|---|---|---|
+| phone | 0.472 | 0.497 | **0.507** [0.451, 0.555] (0.517 with context) | 0.612 | 83% (84%) |
+| word | 0.380 | 0.491 | **0.501** [0.437, 0.553] | 0.533 | 94% |
+| utterance accuracy | 0.573 | 0.645 | **0.712** [0.655, 0.756] | 0.714 | 100% |
+| utterance total | 0.613 | 0.682 | **0.751** [0.689, 0.796] | 0.742 | 101% |
+
+Utterance-level fusion using the whole-path DTW cost instead gives 0.716 /
+0.757 (`analyze_so762_fusion_heldout.py`); fused - GOP-only is +0.07 at both
+utterance measures, significant. Every "fused - baseline" difference above
+is significant; phone-level fused vs. calibrated-GOP-only (+0.010) is not.
+
+**Reading it.** Utterance level: parity with GOPT with no pronunciation-label
+training. Word level: 94%. Phone level: 83-84% -- the one place a real gap
+remains, and the place where DTW helps least on so762 because its templates
+are synthetic (the same fusion gains +0.089 over GOP-SF with real native
+templates on L2-ARCTIC). Most of the gain is *not* exotic: pooling choices
+and label-free native calibration together are worth about +0.11 word and
++0.07 utterance; DTW-SSL fusion is worth another +0.07 utterance.
+
+**Caveats that belong in the paper.** (1) so762 references are synthetic
+Kitten-TTS voices, not native speech; (2) fusion z-scores are label-free but
+transductive -- the held-out runs take them from the other speaker half, a
+deployed single-utterance system would need stored reference statistics;
+(3) native calibration uses UME-ERJ's American speakers (headset audio) --
+statistics from other native corpora were not compared; (4) GOPT numbers
+are from its paper's Table 1, not re-run here; (5) the UME-ERJ layer gain
+and the DTW result on holistic labels are label-type-specific (sections
+5b/5j/5l) -- not claimed for clean phone-correctness labels; (6) selection
+among small grids used speaker-disjoint halves of one corpus; L2-ARCTIC
+confirms calibration and fusion but not the exact chosen configuration.
+
+**Engineering notes.** `dtw_ssl.dtw_cost` now runs a numba-jitted DP (80x
+faster: 0.13 ms vs. 10.4 ms for 250x260; identical to the Python
+reference, tie-break included, tested), plus `dtw_path`, `phone_costs`
+(per-phone cost from the DTW path over template phone spans) and
+`embed_layers`; `align_words_gop` phone entries now carry their Viterbi
+`span` (additive; tested). Two collection crashes were real data issues,
+not code bugs: UME-ERJ contains zero-length/too-short recordings (items 28,
+125, ... -- 7 of the first 300 phonetic-sentence items); the collector now
+skips and records them, and the sweep uses the same 293 items as section 5l.
+
+**Reference voices: does better or more native-like TTS help? (Tested: no.)**
+The phone-level DTW weakness on so762 was hypothesised to come from the
+synthetic references (Kitten Nano int8), so five alternatives were piloted
+against it on identical utterances (`proscor/tts_ref.py`, evaluation-only,
+sherox untouched; `scripts/collect_so762_phone_dtw.py --voices ...
+--pilot-fold 0 --per-speaker 3`, `scripts/analyze_tts_pilot.py`): 189
+utterances, 63 speakers of speaker-half 0, 4 voices per set, everything else
+fixed (calibrated GOP, final WavLM layer, unweighted fusion). Sets: Kokoro
+v0.19 (high quality), LibriTTS-R (audiobook speakers), the CMU-ARCTIC Piper
+model, four US Piper voices (Lessac-high, Ryan-high, Joe, John), and -- as a
+controlled accent test at the same synthesis family -- four *British* Piper
+voices (`en_GB`, British phonemization; Cori-high, Alan, Jenny, Northern
+male).
+
+| voice set | DTW utt-acc | DTW utt-tot | DTW phone | fused phone | fused word |
+|---|---|---|---|---|---|
+| Kitten (original) | 0.668 | 0.694 | 0.380 | 0.501 | 0.494 |
+| Kokoro | 0.696 | 0.731 | 0.374 | 0.499 | 0.499 |
+| LibriTTS-R | 0.678 | 0.716 | 0.350 | 0.492 | 0.494 |
+| ARCTIC Piper | 0.671 | 0.699 | 0.370 | 0.498 | 0.492 |
+| US Piper | 0.680 | 0.710 | 0.374 | 0.501 | 0.500 |
+| British Piper | 0.680 | 0.711 | 0.372 | 0.500 | 0.497 |
+
+Paired (same utterances, speaker-cluster bootstrap): Kokoro - Kitten
++0.026 utt-acc (n.s.), +0.034 utt-tot (significant, CI just excludes 0),
+-0.007 DTW phone (n.s.); **British - US Piper: -0.001 / +0.001 / -0.002,
+all n.s.**; US Piper - Kitten n.s. everywhere. **Reading:** synthesis quality
+and voice accent are not what limits phone-level DTW on so762 -- it sits at
+0.35-0.38 for every set. Kokoro's small utterance-total edge is the only
+nominal gain and is not carried to phone/word level. Caveat: the pilot uses
+speaker-half 0 only and 3 utterances per speaker; it is a screen, not a
+full-corpus comparison, and the Kitten row is the original run restricted to
+the same utterances. On "do the references need to be US speakers": with
+synthetic voices, US vs. British made no measurable difference at any level
+tested; for *real* native recordings the safe default remains speakers of the
+variety the labels and phonemizer assume (US here), and fluent non-native
+speakers are not appropriate (their own accent would define "correct").
+
+**Calibrating the DTW cost with native statistics (tested: not a general
+recipe).** GOP calibration (above) subtracts a per-phone native baseline;
+the same idea for the DTW cost needs native-speech phone costs measured the
+way learners are scored, so `scripts/collect_native_dtw.py` scored UME-ERJ
+American speakers against (a) the 4 Kitten voices used on so762 (606
+utterances; the setting where a synthetic-reference offset should exist) and
+(b) 4 *other* American speakers reading the same prompt (1,200 utterances;
+the real-native-template setting, e.g. L2-ARCTIC's bdl/slt). Per-phone mean
+(shift) or mean/std (z) of the native cost was then removed from each
+learner phone's cost (`scripts/analyze_dtw_calibration.py`,
+`eval_l2arctic_phone_dtw.py`; both fully pre-declared -- only shift vs. z is
+compared, nothing selected from a grid).
+
+| setting | DTW alone | fused with calibrated GOP |
+|---|---|---|
+| so762, synthetic refs, phone: none -> shift -> z | 0.384 -> 0.394 -> 0.397 | 0.503 -> 0.506 -> 0.508 (+0.005, mostly n.s.) |
+| so762, word: none -> z | 0.381 -> 0.409 (+0.028) | 0.480 -> 0.487 (+0.007) |
+| L2-ARCTIC, real native refs, phone: none -> shift -> z | 0.300 -> 0.288 -> 0.278 (both **significantly worse**) | 0.364 (GOP z + raw DTW) -> 0.345 (both calibrated), -0.019 sig |
+
+**Reading:** with synthetic references the calibration recovers a small
+per-phone artifact (+0.01 DTW-alone at phone level, +0.03 at word level) that
+mostly vanishes once fused with calibrated GOP; with *real* native references
+it removes signal (phones that cost more against natives are also harder for
+learners -- the same reason native-native text-difficulty normalization hurt
+in the UME-ERJ sweep). Not adopted; the uncalibrated DTW cost stays the
+default. Caveat: the calibration statistics come from UME-ERJ headset audio
+(American speakers) while L2-ARCTIC's references are bdl/slt studio
+recordings, so a speaker/channel mismatch may contribute to the L2-ARCTIC
+loss; statistics from the matching reference speakers were not collected.
+
+**Where this leaves the phone-level gap.** The two remedies this section
+listed as untested -- better references and native calibration of the DTW
+cost -- are both now tested and give at most ~+0.005 fused at phone level.
+Phone-level zero-shot stays at 0.507 (0.517 with context), 83-84% of GOPT.
+What is still untested is the *kind* of reference, not its quality: real
+native recordings of so762's own prompts (which don't exist), or a
+phone-level signal that doesn't depend on a reference at all. On L2-ARCTIC,
+where real natives exist, per-phone DTW is competitive with GOP-SF
+(0.300 vs 0.256) and fusion gives +0.089-0.108 -- suggesting the remaining
+so762 gap is a reference-availability limit rather than a method limit, though
+that comparison is across corpora and not a controlled test.
 
 ---
 

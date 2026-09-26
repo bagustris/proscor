@@ -87,20 +87,39 @@ def embed(samples: np.ndarray, sr: int = SAMPLE_RATE) -> np.ndarray:
     return (emb / np.clip(norms, 1e-8, None)).astype(np.float32)
 
 
-def dtw_cost(a: np.ndarray, b: np.ndarray) -> float:
-    """Standard DTW over two L2-normalized frame sequences `a` (T1,D),
-    `b` (T2,D): the per-cell distance matrix is `1 - cosine_similarity`
-    (a plain dot product, since rows are already unit norm), aligned by
-    the usual 3-step dynamic program (stay/step-down/step-right, every
-    frame of both sequences visited at least once -- no skipping). The
-    returned score is the cumulative cost along the optimal path,
-    normalized by the path's actual length in steps (via backtracking),
-    matching the paper's "normalized by path length" -- not `T1+T2`,
-    which overcounts whenever the path takes more diagonal steps than
-    the longer sequence's own length."""
-    T1, T2 = a.shape[0], b.shape[0]
-    dist = 1.0 - a @ b.T  # (T1, T2) cosine distance
+def embed_layers(samples: np.ndarray, layers, sr: int = SAMPLE_RATE) -> dict:
+    """Like `embed()` but returns several WavLM layers from one forward
+    pass: `{layer: (T,1024) L2-normalized}`. `layers` may mix ints (index
+    into `hidden_states`: 0 = post-CNN/pre-transformer, 24 = the last
+    transformer block's output *before* the encoder's trailing LayerNorm)
+    and the string "last" (= `last_hidden_state`, what `embed()` returns
+    and what every result in PLAN.md 5l used). Added for the layer sweep
+    in PLAN.md section 5m."""
+    import torch
 
+    model, fe = _get_model()
+    samples = np.ascontiguousarray(samples, dtype=np.float32)
+    if sr != SAMPLE_RATE:
+        from audiokit import resample
+
+        samples = np.asarray(resample(samples, sr, SAMPLE_RATE), dtype=np.float32)
+    inputs = fe(samples, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+    with torch.no_grad():
+        out = model(**inputs, output_hidden_states=True)
+    result = {}
+    for layer in layers:
+        h = out.last_hidden_state if layer == "last" else out.hidden_states[layer]
+        emb = h[0].numpy()
+        norms = np.linalg.norm(emb, axis=-1, keepdims=True)
+        result[layer] = (emb / np.clip(norms, 1e-8, None)).astype(np.float32)
+    return result
+
+
+def _dtw_cost_python(dist: np.ndarray) -> float:
+    """Reference pure-Python DP over a (T1,T2) distance matrix; kept as the
+    fallback when numba isn't installed and as the oracle
+    `tests/test_dtw_ssl.py` checks the jitted path against."""
+    T1, T2 = dist.shape
     acc = np.full((T1, T2), np.inf, dtype=np.float64)
     acc[0, 0] = dist[0, 0]
     for i in range(1, T1):
@@ -128,6 +147,175 @@ def dtw_cost(a: np.ndarray, b: np.ndarray) -> float:
         length += 1
 
     return float(acc[T1 - 1, T2 - 1] / length)
+
+
+try:
+    from numba import njit
+
+    @njit(cache=True)
+    def _dtw_cost_numba(dist):
+        T1, T2 = dist.shape
+        acc = np.full((T1, T2), np.inf)
+        acc[0, 0] = dist[0, 0]
+        for i in range(1, T1):
+            acc[i, 0] = acc[i - 1, 0] + dist[i, 0]
+        for j in range(1, T2):
+            acc[0, j] = acc[0, j - 1] + dist[0, j]
+        for i in range(1, T1):
+            for j in range(1, T2):
+                m = min(acc[i - 1, j], acc[i, j - 1], acc[i - 1, j - 1])
+                acc[i, j] = dist[i, j] + m
+        i = T1 - 1
+        j = T2 - 1
+        length = 1
+        while i > 0 or j > 0:
+            if i == 0:
+                j -= 1
+            elif j == 0:
+                i -= 1
+            else:
+                up, left, diag = acc[i - 1, j], acc[i, j - 1], acc[i - 1, j - 1]
+                # same tie-break order as the Python path: up, left, diag
+                if up <= left and up <= diag:
+                    i -= 1
+                elif left <= diag:
+                    j -= 1
+                else:
+                    i -= 1
+                    j -= 1
+            length += 1
+        return acc[T1 - 1, T2 - 1] / length
+except ImportError:  # numba is optional; ~50x slower without it
+    _dtw_cost_numba = None
+
+
+def dtw_cost(a: np.ndarray, b: np.ndarray) -> float:
+    """Standard DTW over two L2-normalized frame sequences `a` (T1,D),
+    `b` (T2,D): the per-cell distance matrix is `1 - cosine_similarity`
+    (a plain dot product, since rows are already unit norm), aligned by
+    the usual 3-step dynamic program (stay/step-down/step-right, every
+    frame of both sequences visited at least once -- no skipping). The
+    returned score is the cumulative cost along the optimal path,
+    normalized by the path's actual length in steps (via backtracking),
+    matching the paper's "normalized by path length" -- not `T1+T2`,
+    which overcounts whenever the path takes more diagonal steps than
+    the longer sequence's own length. Uses a numba-jitted DP when numba
+    is installed (identical results to the pure-Python reference,
+    checked in tests/test_dtw_ssl.py), else the Python fallback."""
+    dist = np.ascontiguousarray(1.0 - a @ b.T, dtype=np.float64)  # (T1, T2) cosine distance
+    if _dtw_cost_numba is not None:
+        return float(_dtw_cost_numba(dist))
+    return _dtw_cost_python(dist)
+
+
+def _dtw_path_python(dist: np.ndarray) -> np.ndarray:
+    """Optimal DTW path over a (T1,T2) distance matrix as an (L,2) int array
+    of (i, j) cells from (0,0) to (T1-1,T2-1); same recurrence and up/left/
+    diag backtracking tie-break as `_dtw_cost_python`."""
+    T1, T2 = dist.shape
+    acc = np.full((T1, T2), np.inf)
+    acc[0, 0] = dist[0, 0]
+    for i in range(1, T1):
+        acc[i, 0] = acc[i - 1, 0] + dist[i, 0]
+    for j in range(1, T2):
+        acc[0, j] = acc[0, j - 1] + dist[0, j]
+    for i in range(1, T1):
+        for j in range(1, T2):
+            acc[i, j] = dist[i, j] + min(acc[i - 1, j], acc[i, j - 1], acc[i - 1, j - 1])
+    i, j = T1 - 1, T2 - 1
+    cells = [(i, j)]
+    while i > 0 or j > 0:
+        if i == 0:
+            j -= 1
+        elif j == 0:
+            i -= 1
+        else:
+            up, left, diag = acc[i - 1, j], acc[i, j - 1], acc[i - 1, j - 1]
+            if up <= left and up <= diag:
+                i -= 1
+            elif left <= diag:
+                j -= 1
+            else:
+                i -= 1
+                j -= 1
+        cells.append((i, j))
+    return np.array(cells[::-1], dtype=np.int64)
+
+
+try:
+    @njit(cache=True)
+    def _dtw_path_numba(dist):
+        T1, T2 = dist.shape
+        acc = np.full((T1, T2), np.inf)
+        acc[0, 0] = dist[0, 0]
+        for i in range(1, T1):
+            acc[i, 0] = acc[i - 1, 0] + dist[i, 0]
+        for j in range(1, T2):
+            acc[0, j] = acc[0, j - 1] + dist[0, j]
+        for i in range(1, T1):
+            for j in range(1, T2):
+                acc[i, j] = dist[i, j] + min(acc[i - 1, j], acc[i, j - 1], acc[i - 1, j - 1])
+        out = np.empty((T1 + T2, 2), dtype=np.int64)
+        n = 0
+        i = T1 - 1
+        j = T2 - 1
+        out[n, 0] = i
+        out[n, 1] = j
+        n += 1
+        while i > 0 or j > 0:
+            if i == 0:
+                j -= 1
+            elif j == 0:
+                i -= 1
+            else:
+                up, left, diag = acc[i - 1, j], acc[i, j - 1], acc[i - 1, j - 1]
+                if up <= left and up <= diag:
+                    i -= 1
+                elif left <= diag:
+                    j -= 1
+                else:
+                    i -= 1
+                    j -= 1
+            out[n, 0] = i
+            out[n, 1] = j
+            n += 1
+        return out[:n][::-1].copy()
+except NameError:  # numba missing (see above)
+    _dtw_path_numba = None
+
+
+def dtw_path(a: np.ndarray, b: np.ndarray) -> tuple:
+    """(normalized cost, path): the same DTW as `dtw_cost` plus its optimal
+    (i, j) cell path, `i` indexing `a` (learner) and `j` indexing `b`
+    (template)."""
+    dist = np.ascontiguousarray(1.0 - a @ b.T, dtype=np.float64)
+    path = _dtw_path_numba(dist) if _dtw_path_numba is not None else _dtw_path_python(dist)
+    cost = float(dist[path[:, 0], path[:, 1]].sum() / len(path))
+    return cost, path, dist
+
+
+def phone_costs(learner_emb: np.ndarray, template_emb: np.ndarray, template_spans: list) -> list:
+    """Per-phone DTW cost of a learner utterance against ONE template
+    (PLAN.md section 5m): DTW-align the whole utterances, then for each
+    template phone `(start, end)` (template frame range, e.g. from a CTC
+    forced alignment of the template) average the cosine distance over the
+    path cells whose template index falls in that range. Cells are visited
+    once per path step, so a phone the learner stretched or compressed is
+    scored on however many learner frames the path spent on it, without
+    length inflation. None for a span with no path cell (empty/out-of-range).
+    Frame rates match (WavLM and the wav2vec2 CTC models are both 20 ms),
+    so CTC frame indices index WavLM frames directly."""
+    _cost, path, dist = dtw_path(learner_emb, template_emb)
+    out = []
+    T2 = template_emb.shape[0]
+    for s, e in template_spans:
+        s, e = max(0, s), min(T2, e)
+        if e <= s:
+            out.append(None)
+            continue
+        m = (path[:, 1] >= s) & (path[:, 1] < e)
+        out.append(float(dist[path[m, 0], path[m, 1]].mean()) if m.any() else None)
+    return out
 
 
 def embed_wav_cached(wav_path, cache_dir) -> np.ndarray:

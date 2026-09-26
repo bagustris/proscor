@@ -372,6 +372,7 @@ def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
             # one token this reduces to the old single-state computation
             # byte-for-byte.
             state_gops = []
+            first_frame, last_frame = None, None
             for k in range(pstart, pend):
                 state = 2 * k + 1
                 pidx = np.nonzero(path == state)[0]
@@ -379,12 +380,18 @@ def align_words_gop(samples: np.ndarray, words: list, sr: int = SAMPLE_RATE,
                     continue
                 pgop = float((lp[pidx, ext_labels[state]] - frame_best[pidx]).mean())
                 state_gops.append((pgop, int(pidx.size)))
+                first_frame = int(pidx[0]) if first_frame is None else min(first_frame, int(pidx[0]))
+                last_frame = int(pidx[-1]) if last_frame is None else max(last_frame, int(pidx[-1]))
             if not state_gops:
                 this_word_phones.append(None)
                 continue
             total_frames = sum(n for _, n in state_gops)
             mean_gop = sum(g * n for g, n in state_gops) / total_frames
-            this_word_phones.append({"phone": phone, "gop": mean_gop, "n_frames": total_frames})
+            # "span" = [first, last+1) CTC frame range the phone's own state(s)
+            # occupy on the Viterbi path (20 ms frames); used by phone-level
+            # DTW to cut a native template into per-phone regions (PLAN.md 5m).
+            this_word_phones.append({"phone": phone, "gop": mean_gop, "n_frames": total_frames,
+                                     "span": (first_frame, last_frame + 1)})
         phone_gop.append(this_word_phones)
 
         # Word GOP = mean of its phones' own GOP (phone-state frames only).

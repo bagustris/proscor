@@ -64,3 +64,55 @@ def test_score_aggregates_mean_and_min_over_templates():
     assert result["min"] == pytest.approx(0.0, abs=1e-6)
     assert result["mean"] == pytest.approx(0.5, abs=1e-6)
     assert sorted(result["costs"]) == pytest.approx([0.0, 1.0], abs=1e-6)
+
+
+def test_numba_dtw_matches_python_reference():
+    """The jitted DP must give the same score as the pure-Python reference
+    (including its up/left/diag backtracking tie-break) on random and on
+    tie-heavy inputs -- the speedup must not change any published number."""
+    if dtw_ssl._dtw_cost_numba is None:
+        pytest.skip("numba not installed")
+    rng = np.random.default_rng(1)
+    for T1, T2 in [(1, 1), (1, 4), (5, 1), (9, 13), (40, 37)]:
+        a = rng.normal(size=(T1, 6)); b = rng.normal(size=(T2, 6))
+        dist = 1.0 - (a / np.linalg.norm(a, axis=-1, keepdims=True)) @ (b / np.linalg.norm(b, axis=-1, keepdims=True)).T
+        assert dtw_ssl._dtw_cost_numba(dist) == pytest.approx(dtw_ssl._dtw_cost_python(dist), abs=1e-12)
+    ties = np.ones((7, 8))  # every path costs the same: exercises the tie-break
+    assert dtw_ssl._dtw_cost_numba(ties) == pytest.approx(dtw_ssl._dtw_cost_python(ties), abs=1e-12)
+
+
+def test_dtw_path_matches_python_reference_and_cost():
+    rng = np.random.default_rng(3)
+    a = rng.normal(size=(11, 5)); b = rng.normal(size=(14, 5))
+    a /= np.linalg.norm(a, axis=-1, keepdims=True); b /= np.linalg.norm(b, axis=-1, keepdims=True)
+    dist = 1.0 - a @ b.T
+    ref = dtw_ssl._dtw_path_python(dist)
+    cost, path, _ = dtw_ssl.dtw_path(a, b)
+    assert (path == ref).all()
+    assert (path[0] == [0, 0]).all() and (path[-1] == [10, 13]).all()
+    assert cost == pytest.approx(dtw_ssl.dtw_cost(a, b), abs=1e-9)
+
+
+def test_phone_costs_localizes_the_mismatch():
+    """Template = 3 phones x 2 frames each along orthogonal directions; the
+    learner matches phones 1 and 3 but says something else for phone 2 -> only
+    the middle phone gets a high cost."""
+    e = np.eye(4, dtype=np.float32)
+    template = np.array([e[0], e[0], e[1], e[1], e[2], e[2]])
+    learner = np.array([e[0], e[0], e[3], e[3], e[2], e[2]])
+    c = dtw_ssl.phone_costs(learner, template, [(0, 2), (2, 4), (4, 6), (9, 12)])
+    assert c[0] == pytest.approx(0.0, abs=1e-6)
+    assert c[1] == pytest.approx(1.0, abs=1e-6)
+    assert c[2] == pytest.approx(0.0, abs=1e-6)
+    assert c[3] is None  # span beyond the template
+
+
+def test_ref_voice_sets_only_use_known_models():
+    """Every (model, speaker) in tts_ref.VOICE_SETS must name a model in
+    _MODELS -- a typo would only surface as a KeyError mid-collection."""
+    from proscor import tts_ref
+    for name, voices in tts_ref.VOICE_SETS.items():
+        assert len(voices) >= 1, name
+        for key, sid in voices:
+            assert key in tts_ref._MODELS, (name, key)
+            assert isinstance(sid, int)
